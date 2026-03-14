@@ -66,6 +66,175 @@ export interface BookmarkSuggestion {
   summary: string;
 }
 
+export interface BookmarkFolderCandidate {
+  path: string;
+  name: string;
+  parentPath: string | null;
+  depth: number;
+  bookmarkCount?: number;
+}
+
+export type ExistingBookmarkPlanAction =
+  | {
+      type: 'move';
+      targetFolderPath: string;
+    }
+  | {
+      type: 'rename';
+      title: string;
+    }
+  | {
+      type: 'summary';
+      summary: string;
+    }
+  | {
+      type: 'create_folder';
+      parentFolderPath: string;
+      folderName: string;
+      targetFolderPath: string;
+    }
+  | {
+      type: 'delete';
+      reason: 'duplicate' | 'low_quality' | 'broken' | 'other';
+    }
+  | {
+      type: 'merge';
+      targetBookmarkId: string;
+    }
+  | {
+      type: 'keep';
+    };
+
+export interface ExistingBookmarkSuggestionItem {
+  bookmarkId: string;
+  url: string;
+  originalTitle: string;
+  currentFolderPath: string;
+  suggestedFolder: string;
+  suggestedTitle: string;
+  confidence: number;
+  summary: string;
+  reason: string;
+  actions: ExistingBookmarkPlanAction[];
+}
+
+export interface ExistingBookmarkSuggestionPreview {
+  totalBookmarksScanned: number;
+  suggestionCount: number;
+  suggestions: ExistingBookmarkSuggestionItem[];
+}
+
+export interface SmartOrganizeJobSnapshot {
+  id: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  total: number;
+  scanned: number;
+  suggestionCount: number;
+  batchSize: number;
+  suggestions: ExistingBookmarkSuggestionItem[];
+  error?: string;
+}
+
+export interface ExistingBookmarkApplyActions {
+  moveToFolder: boolean;
+  renameTitle: boolean;
+  updateSummary: boolean;
+}
+
+export interface DuplicateBookmarkCandidate {
+  id: string;
+  title: string;
+  url: string;
+  folderPath: string;
+  hasSummary?: boolean;
+}
+
+export interface DuplicateBookmarkGroup {
+  normalizedUrl: string;
+  url: string;
+  items: DuplicateBookmarkCandidate[];
+  keepBookmarkId: string;
+  suggestedTitle: string;
+  suggestedFolderPath: string;
+  removeBookmarkIds: string[];
+  actions: Array<
+    | {
+        type: 'rename';
+        bookmarkId: string;
+        title: string;
+      }
+    | {
+        type: 'merge_summary';
+        fromBookmarkIds: string[];
+        toBookmarkId: string;
+      }
+    | {
+        type: 'delete';
+        bookmarkIds: string[];
+      }
+  >;
+}
+
+export interface DuplicateBookmarkPreview {
+  totalBookmarksScanned: number;
+  duplicateGroupCount: number;
+  groups: DuplicateBookmarkGroup[];
+}
+
+export interface DuplicateBookmarkMergeSelection {
+  normalizedUrl: string;
+  keepBookmarkId: string;
+  removeBookmarkIds: string[];
+}
+
+export interface FolderAuditIssue {
+  id: string;
+  path: string;
+  type: 'empty_folder' | 'sparse_folder' | 'deep_folder' | 'similar_folder';
+  bookmarkCount: number;
+  subfolderCount: number;
+  depth: number;
+  similarFolderPaths?: string[];
+  suggestedTargetFolderId?: string;
+  suggestedTargetFolderPath?: string;
+  mergeBookmarkCount?: number;
+}
+
+export interface ApplyFolderMergeIssueRequest {
+  sourceFolderId: string;
+  targetFolderId: string;
+}
+
+export interface ApplyFolderMergeIssueResult {
+  movedCount: number;
+  removedDuplicateCount: number;
+  deletedFolderCount: number;
+}
+
+export interface FolderAuditPreview {
+  totalFoldersScanned: number;
+  emptyFolderCount: number;
+  sparseFolderCount: number;
+  deepFolderCount: number;
+  similarFolderCount: number;
+  issues: FolderAuditIssue[];
+}
+
+export interface SummaryToolItem {
+  bookmarkId: string;
+  url: string;
+  title: string;
+  folderPath: string;
+  summary: string | null;
+  hasSummary: boolean;
+}
+
+export interface SummaryToolPreview {
+  totalBookmarksScanned: number;
+  missingSummaryCount: number;
+  items: SummaryToolItem[];
+}
+
 export interface DuplicateBookmarkMatch {
   id: string;
   title: string;
@@ -87,6 +256,49 @@ export interface BookmarkSummaryRecord {
   summary: string;
   createdAt: number;
   updatedAt: number;
+}
+
+export type OperationHistoryChange =
+  | {
+      type: 'move_bookmark';
+      bookmarkId: string;
+      title: string;
+      url: string;
+      fromParentId: string;
+      toParentId: string;
+    }
+  | {
+      type: 'rename_bookmark';
+      bookmarkId: string;
+      fromTitle: string;
+      toTitle: string;
+    }
+  | {
+      type: 'delete_bookmark';
+      bookmarkId: string;
+      title: string;
+      url: string;
+      parentId: string;
+      summary?: BookmarkSummaryRecord;
+    }
+  | {
+      type: 'delete_empty_folder';
+      folderId: string;
+      title: string;
+      parentId: string;
+    };
+
+export interface OperationHistoryEntry {
+  id: string;
+  kind: 'duplicate_cleanup' | 'folder_merge' | 'smart_organize' | 'bookmark_recommendation';
+  label: string;
+  createdAt: number;
+  changes: OperationHistoryChange[];
+}
+
+export interface UndoOperationHistoryResult {
+  restoredCount: number;
+  skippedCount: number;
 }
 
 export interface BookmarkEvaluationSignals {

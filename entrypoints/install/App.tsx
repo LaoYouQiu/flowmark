@@ -1,4 +1,4 @@
-import { createMemo, createSignal, onMount, Show } from 'solid-js';
+import { createMemo, createSignal, onMount } from 'solid-js';
 
 import { AiProviderFields } from '@/src/components/AiProviderFields';
 import { Button } from '@/src/components/Button';
@@ -9,6 +9,7 @@ import {
   resolveLocale,
   useI18n,
 } from '@/src/shared/i18n';
+import { openOrganizePage } from '@/src/shared/open-organize-page';
 import {
   getAiPermissionGranted,
   getProviderStatus,
@@ -86,28 +87,32 @@ export default function App() {
     }
   };
 
+  const handleOpenOrganizer = () => {
+    void openOrganizePage();
+  };
+
   return (
     <ReleasePage
       pageKind="install"
       installAddon={
-        <section class="rounded-[28px] border border-slate-200 bg-white px-5 py-5 shadow-sm sm:px-6 sm:py-6">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                {t('install.inlineSetupTitle')}
+        <div class="space-y-6">
+          <section class="rounded-xl border border-neutral-200 bg-white px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.03)] sm:px-6 sm:py-6">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div class="text-[11px] font-medium uppercase tracking-[0.16em] text-neutral-400">
+                  {t('install.inlineSetupTitle')}
+                </div>
+                <p class="mt-2 max-w-2xl text-sm leading-6 text-neutral-500">
+                  {t('install.inlineSetupDescription')}
+                </p>
               </div>
-              <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                {t('install.inlineSetupDescription')}
-              </p>
+              <StatusBadge tone={providerStatus().tone}>{providerStatus().label}</StatusBadge>
             </div>
-            <StatusBadge tone={providerStatus().tone}>{providerStatus().label}</StatusBadge>
-          </div>
 
-          <div class="mt-5">
-            <Show when={settings()}>
-              {(current) => (
+            <div class="mt-5">
+              {settings() && (
                 <AiProviderFields
-                  settings={current()}
+                  settings={settings()!}
                   permissionGranted={permissionGranted()}
                   baseUrlLabel={t('options.baseUrlLabel')}
                   baseUrlPlaceholder={t('options.baseUrlPlaceholder')}
@@ -123,14 +128,14 @@ export default function App() {
                   onModelInput={(value) => update('aiModel', value)}
                   onApiKeyInput={(value) => update('aiApiKey', value)}
                   footer={
-                    <div class="flex flex-col items-start justify-between gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:items-center">
-                      <div class="text-sm text-slate-600">
-                        <Show when={saveStatus().kind === 'saved'}>
-                          <span class="text-teal-700">{t('common.saved')}</span>
-                        </Show>
-                        <Show when={saveErrorMessage()}>
-                          {(message) => <span class="text-red-700">{message()}</span>}
-                        </Show>
+                    <div class="flex flex-col items-start justify-between gap-3 border-t border-neutral-200 pt-5 sm:flex-row sm:items-center">
+                      <div class="min-h-5 text-sm text-neutral-500">
+                        {saveStatus().kind === 'saved' && (
+                          <span class="text-neutral-900">{t('common.saved')}</span>
+                        )}
+                        {saveErrorMessage() && (
+                          <span class="text-red-700">{saveErrorMessage()}</span>
+                        )}
                       </div>
                       <Button type="button" onClick={handleSave}>
                         {t('install.inlineSaveLabel')}
@@ -139,9 +144,26 @@ export default function App() {
                   }
                 />
               )}
-            </Show>
-          </div>
-        </section>
+            </div>
+          </section>
+
+          <section class="rounded-xl border border-neutral-200 bg-[linear-gradient(135deg,#ffffff,#f6f6f6)] px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.03)] sm:px-6 sm:py-6">
+            <div class="text-[11px] font-medium uppercase tracking-[0.16em] text-neutral-400">
+              {t('install.organizerTitle')}
+            </div>
+            <div class="mt-2 text-xl font-medium tracking-tight text-neutral-900">
+              {t('install.organizerHeading')}
+            </div>
+            <p class="mt-3 max-w-2xl text-sm leading-6 text-neutral-500">
+              {t('install.organizerDescription')}
+            </p>
+            <div class="mt-5">
+              <Button type="button" variant="secondary" onClick={handleOpenOrganizer}>
+                {t('install.organizerOpenButton')}
+              </Button>
+            </div>
+          </section>
+        </div>
       }
     />
   );
