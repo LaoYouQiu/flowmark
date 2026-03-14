@@ -66,6 +66,80 @@ export interface BookmarkSuggestion {
   summary: string;
 }
 
+export interface ExistingBookmarkSuggestionItem {
+  bookmarkId: string;
+  url: string;
+  originalTitle: string;
+  currentFolderPath: string;
+  suggestedFolder: string;
+  suggestedTitle: string;
+  confidence: number;
+  summary: string;
+}
+
+export interface ExistingBookmarkSuggestionPreview {
+  totalBookmarksScanned: number;
+  suggestionCount: number;
+  suggestions: ExistingBookmarkSuggestionItem[];
+}
+
+export interface ExistingBookmarkApplyActions {
+  moveToFolder: boolean;
+  renameTitle: boolean;
+  updateSummary: boolean;
+}
+
+export interface DuplicateBookmarkCandidate {
+  id: string;
+  title: string;
+  url: string;
+  folderPath: string;
+}
+
+export interface DuplicateBookmarkGroup {
+  normalizedUrl: string;
+  url: string;
+  items: DuplicateBookmarkCandidate[];
+}
+
+export interface DuplicateBookmarkPreview {
+  totalBookmarksScanned: number;
+  duplicateGroupCount: number;
+  groups: DuplicateBookmarkGroup[];
+}
+
+export interface FolderAuditIssue {
+  id: string;
+  path: string;
+  type: 'empty_folder' | 'sparse_folder' | 'deep_folder';
+  bookmarkCount: number;
+  subfolderCount: number;
+  depth: number;
+}
+
+export interface FolderAuditPreview {
+  totalFoldersScanned: number;
+  emptyFolderCount: number;
+  sparseFolderCount: number;
+  deepFolderCount: number;
+  issues: FolderAuditIssue[];
+}
+
+export interface SummaryToolItem {
+  bookmarkId: string;
+  url: string;
+  title: string;
+  folderPath: string;
+  summary: string | null;
+  hasSummary: boolean;
+}
+
+export interface SummaryToolPreview {
+  totalBookmarksScanned: number;
+  missingSummaryCount: number;
+  items: SummaryToolItem[];
+}
+
 export interface DuplicateBookmarkMatch {
   id: string;
   title: string;
