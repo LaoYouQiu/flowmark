@@ -1,5 +1,5 @@
-export type Locale = 'en' | 'zh-CN';
-export type LocaleOverride = 'auto' | Locale;
+export type Locale = "en" | "zh-CN";
+export type LocaleOverride = "auto" | Locale;
 
 export interface FlowmarkSettings {
   enabled: boolean;
@@ -25,10 +25,10 @@ export const DEFAULT_SETTINGS: FlowmarkSettings = {
   autoAcceptSeconds: 5,
   sendPageText: false,
   maxPageChars: 5000,
-  aiBaseURL: '',
-  aiApiKey: '',
-  aiModel: '',
-  localeOverride: 'auto',
+  aiBaseURL: "",
+  aiApiKey: "",
+  aiModel: "",
+  localeOverride: "auto",
 };
 
 export interface FlowmarkFeatureConfig {
@@ -76,33 +76,33 @@ export interface BookmarkFolderCandidate {
 
 export type ExistingBookmarkPlanAction =
   | {
-      type: 'move';
+      type: "move";
       targetFolderPath: string;
     }
   | {
-      type: 'rename';
+      type: "rename";
       title: string;
     }
   | {
-      type: 'summary';
+      type: "summary";
       summary: string;
     }
   | {
-      type: 'create_folder';
+      type: "create_folder";
       parentFolderPath: string;
       folderName: string;
       targetFolderPath: string;
     }
   | {
-      type: 'delete';
-      reason: 'duplicate' | 'low_quality' | 'broken' | 'other';
+      type: "delete";
+      reason: "duplicate" | "low_quality" | "broken" | "other";
     }
   | {
-      type: 'merge';
+      type: "merge";
       targetBookmarkId: string;
     }
   | {
-      type: 'keep';
+      type: "keep";
     };
 
 export interface ExistingBookmarkSuggestionItem {
@@ -126,7 +126,7 @@ export interface ExistingBookmarkSuggestionPreview {
 
 export interface SmartOrganizeJobSnapshot {
   id: string;
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  status: "running" | "completed" | "failed" | "cancelled";
   total: number;
   scanned: number;
   suggestionCount: number;
@@ -159,17 +159,17 @@ export interface DuplicateBookmarkGroup {
   removeBookmarkIds: string[];
   actions: Array<
     | {
-        type: 'rename';
+        type: "rename";
         bookmarkId: string;
         title: string;
       }
     | {
-        type: 'merge_summary';
+        type: "merge_summary";
         fromBookmarkIds: string[];
         toBookmarkId: string;
       }
     | {
-        type: 'delete';
+        type: "delete";
         bookmarkIds: string[];
       }
   >;
@@ -190,7 +190,7 @@ export interface DuplicateBookmarkMergeSelection {
 export interface FolderAuditIssue {
   id: string;
   path: string;
-  type: 'empty_folder' | 'sparse_folder' | 'deep_folder' | 'similar_folder';
+  type: "empty_folder" | "sparse_folder" | "deep_folder" | "similar_folder";
   bookmarkCount: number;
   subfolderCount: number;
   depth: number;
@@ -243,9 +243,9 @@ export interface DuplicateBookmarkMatch {
 }
 
 export type BookmarkPageQualityReason =
-  | 'login_page'
-  | 'search_results'
-  | 'low_information_density';
+  | "login_page"
+  | "search_results"
+  | "low_information_density";
 
 export interface BookmarkSummaryRecord {
   bookmarkId: string;
@@ -260,7 +260,7 @@ export interface BookmarkSummaryRecord {
 
 export type OperationHistoryChange =
   | {
-      type: 'move_bookmark';
+      type: "move_bookmark";
       bookmarkId: string;
       title: string;
       url: string;
@@ -268,13 +268,13 @@ export type OperationHistoryChange =
       toParentId: string;
     }
   | {
-      type: 'rename_bookmark';
+      type: "rename_bookmark";
       bookmarkId: string;
       fromTitle: string;
       toTitle: string;
     }
   | {
-      type: 'delete_bookmark';
+      type: "delete_bookmark";
       bookmarkId: string;
       title: string;
       url: string;
@@ -282,7 +282,7 @@ export type OperationHistoryChange =
       summary?: BookmarkSummaryRecord;
     }
   | {
-      type: 'delete_empty_folder';
+      type: "delete_empty_folder";
       folderId: string;
       title: string;
       parentId: string;
@@ -290,7 +290,11 @@ export type OperationHistoryChange =
 
 export interface OperationHistoryEntry {
   id: string;
-  kind: 'duplicate_cleanup' | 'folder_merge' | 'smart_organize' | 'bookmark_recommendation';
+  kind:
+    | "duplicate_cleanup"
+    | "folder_merge"
+    | "smart_organize"
+    | "bookmark_recommendation";
   label: string;
   createdAt: number;
   changes: OperationHistoryChange[];
@@ -322,12 +326,12 @@ export interface BookmarkTreeNodeSnapshot {
 }
 
 export type BookmarkEvaluationState =
-  | 'pending_confirmation'
-  | 'evaluating'
-  | 'waiting_user_decision'
-  | 'continuing_after_decision'
-  | 'completed'
-  | 'dismissed';
+  | "pending_confirmation"
+  | "evaluating"
+  | "waiting_user_decision"
+  | "continuing_after_decision"
+  | "completed"
+  | "dismissed";
 
 export interface BookmarkEvaluationContext {
   bookmarkId: string;
@@ -345,7 +349,7 @@ export interface BookmarkEvaluationContext {
 export interface BookmarkCardMetaItem {
   label?: string;
   value: string;
-  tone?: 'default' | 'muted' | 'success' | 'warning' | 'danger';
+  tone?: "default" | "muted" | "success" | "warning" | "danger";
 }
 
 export interface BookmarkCardActionPayload {
@@ -359,15 +363,15 @@ export interface BookmarkCardActionPayload {
 export interface BookmarkCardAction {
   id: string;
   label: string;
-  variant: 'primary' | 'secondary' | 'danger';
-  intent: 'submit' | 'open-options';
+  variant: "primary" | "secondary" | "danger";
+  intent: "submit" | "open-options";
   payload?: BookmarkCardActionPayload;
 }
 
 export interface BookmarkDecisionCard {
   id: string;
   policyId: string;
-  kind: 'info' | 'warning' | 'decision' | 'error' | 'recommendation';
+  kind: "info" | "warning" | "decision" | "error" | "recommendation";
   bookmarkId: string;
   url: string;
   title: string;
@@ -396,22 +400,25 @@ export interface BookmarkPolicyContinuation {
 }
 
 export type PolicyResult =
-  | { type: 'pass' }
+  | { type: "pass" }
   | {
-      type: 'card';
+      type: "card";
       card: BookmarkDecisionCard;
       continuation?: BookmarkPolicyContinuation;
     }
   | {
-      type: 'terminal';
-      reason: 'bookmark_missing' | 'dismissed' | 'completed';
+      type: "terminal";
+      reason: "bookmark_missing" | "dismissed" | "completed";
     };
 
 export interface BookmarkActionStore {
   removeJob(bookmarkId: string): void;
   setState(bookmarkId: string, state: BookmarkEvaluationState): void;
   setActiveCard(bookmarkId: string, card?: BookmarkDecisionCard): void;
-  setContinuation(bookmarkId: string, continuation?: BookmarkPolicyContinuation): void;
+  setContinuation(
+    bookmarkId: string,
+    continuation?: BookmarkPolicyContinuation,
+  ): void;
   enqueue(bookmarkId: string): void;
   suppress(bookmarkId: string, durationMs: number): void;
 }
@@ -422,11 +429,24 @@ export interface BookmarkActionServices {
   bookmarkExists(bookmarkId: string): Promise<boolean>;
   removeBookmark(bookmarkId: string): Promise<void>;
   moveBookmark(bookmarkId: string, parentId: string): Promise<void>;
-  updateBookmarkTitle(bookmarkId: string, title: string): Promise<{ id: string; title: string; url?: string | undefined }>;
-  getBookmark(bookmarkId: string): Promise<{ id: string; title: string; url?: string | undefined; parentId?: string | undefined } | null>;
+  updateBookmarkTitle(
+    bookmarkId: string,
+    title: string,
+  ): Promise<{ id: string; title: string; url?: string | undefined }>;
+  getBookmark(bookmarkId: string): Promise<{
+    id: string;
+    title: string;
+    url?: string | undefined;
+    parentId?: string | undefined;
+  } | null>;
   getBookmarksBarId(): Promise<string | null>;
-  getBookmarksBarLabel(settings?: Pick<FlowmarkSettings, 'localeOverride'>): Promise<string>;
-  findOrCreateFolderPath(bookmarksBarId: string, folderPath: string): Promise<string>;
+  getBookmarksBarLabel(
+    settings?: Pick<FlowmarkSettings, "localeOverride">,
+  ): Promise<string>;
+  findOrCreateFolderPath(
+    bookmarksBarId: string,
+    folderPath: string,
+  ): Promise<string>;
   openBookmarkById(bookmarkId: string): Promise<void>;
   getResolvedSettings(): Promise<ResolvedFlowmarkSettings>;
   upsertBookmarkSummary(input: {
@@ -439,10 +459,10 @@ export interface BookmarkActionServices {
 }
 
 export type BookmarkPolicyActionResult =
-  | { type: 'completed' }
-  | { type: 'dismissed' }
-  | { type: 'continue' }
-  | { type: 'noop' };
+  | { type: "completed" }
+  | { type: "dismissed" }
+  | { type: "continue" }
+  | { type: "noop" };
 
 export interface BookmarkPolicyActionInput {
   context: BookmarkEvaluationContext;
@@ -455,7 +475,11 @@ export interface BookmarkPolicyActionInput {
 export interface BookmarkPolicy {
   id: string;
   enabled(context: BookmarkEvaluationContext): boolean;
-  getProgressCard?(context: BookmarkEvaluationContext): BookmarkDecisionCard | null;
+  getProgressCard?(
+    context: BookmarkEvaluationContext,
+  ): BookmarkDecisionCard | null;
   evaluate(context: BookmarkEvaluationContext): Promise<PolicyResult>;
-  executeAction(input: BookmarkPolicyActionInput): Promise<BookmarkPolicyActionResult>;
+  executeAction(
+    input: BookmarkPolicyActionInput,
+  ): Promise<BookmarkPolicyActionResult>;
 }

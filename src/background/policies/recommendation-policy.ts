@@ -1,15 +1,18 @@
-import { getAiConfigError, getBookmarkSuggestion } from '@/src/shared/bookmark-ai';
-import { createTranslator } from '@/src/shared/i18n';
-import type { BookmarkPolicy, PolicyResult } from '@/src/shared/types';
+import {
+  getAiConfigError,
+  getBookmarkSuggestion,
+} from "@/src/shared/bookmark-ai";
+import { createTranslator } from "@/src/shared/i18n";
+import type { BookmarkPolicy, PolicyResult } from "@/src/shared/types";
 
 import {
   findNodeById,
   getRelativeFolderPath,
   selectFolderCandidateNodes,
-} from '../engine/helpers';
+} from "../engine/helpers";
 
 export const recommendationPolicy: BookmarkPolicy = {
-  id: 'recommendation-policy',
+  id: "recommendation-policy",
   enabled(context) {
     return context.settings.features.recommendation.enabled;
   },
@@ -17,13 +20,16 @@ export const recommendationPolicy: BookmarkPolicy = {
     const { t } = createTranslator(context.locale);
     return {
       id: `loading:${context.bookmarkId}`,
-      policyId: 'recommendation-policy',
-      kind: 'info',
+      policyId: "recommendation-policy",
+      kind: "info",
       bookmarkId: context.bookmarkId,
       url: context.url,
-      title: context.originalTitle || t('common.saving'),
-      headline: t('content.smartRecommendation'),
-      body: context.originalTitle || context.pageContent.title || t('common.bookmark'),
+      title: context.originalTitle || t("common.saving"),
+      headline: t("content.smartRecommendation"),
+      body:
+        context.originalTitle ||
+        context.pageContent.title ||
+        t("common.bookmark"),
       actions: [],
     };
   },
@@ -32,32 +38,35 @@ export const recommendationPolicy: BookmarkPolicy = {
     const configError = await getAiConfigError(context.settings.raw, t);
     if (configError) {
       return {
-        type: 'card',
+        type: "card",
         card: {
           id: `error:${context.bookmarkId}`,
-          policyId: 'recommendation-policy',
-          kind: 'error',
+          policyId: "recommendation-policy",
+          kind: "error",
           bookmarkId: context.bookmarkId,
           url: context.url,
-          title: context.originalTitle || t('common.bookmark'),
+          title: context.originalTitle || t("common.bookmark"),
           headline: configError,
-          body: t('content.tryBookmarkingAgain'),
+          body: t("content.tryBookmarkingAgain"),
           actions: [
             {
-              id: 'open_options',
-              label: t('content.openSettings'),
-              variant: 'secondary',
-              intent: 'open-options',
+              id: "open_options",
+              label: t("content.openSettings"),
+              variant: "secondary",
+              intent: "open-options",
             },
           ],
           autoDismissMs: 4000,
-          autoActionId: 'dismiss_error',
+          autoActionId: "dismiss_error",
         },
       };
     }
 
-    const bookmarksBarLabel = t('common.bookmarksBar');
-    const currentBookmark = findNodeById(context.bookmarkTreeSnapshot, context.bookmarkId);
+    const bookmarksBarLabel = t("common.bookmarksBar");
+    const currentBookmark = findNodeById(
+      context.bookmarkTreeSnapshot,
+      context.bookmarkId,
+    );
     const currentFolderPath = getRelativeFolderPath(
       context.bookmarkTreeSnapshot,
       context.bookmarksBarId,
@@ -82,54 +91,57 @@ export const recommendationPolicy: BookmarkPolicy = {
       folderCandidates,
       bookmarksBarLabel,
       summaryEnabled: context.settings.features.summary.enabled,
-      untitledFallback: t('common.untitled'),
+      untitledFallback: t("common.untitled"),
     });
     if (!suggestion) {
       return {
-        type: 'card',
+        type: "card",
         card: {
           id: `error:${context.bookmarkId}`,
-          policyId: 'recommendation-policy',
-          kind: 'error',
+          policyId: "recommendation-policy",
+          kind: "error",
           bookmarkId: context.bookmarkId,
           url: context.url,
-          title: context.originalTitle || t('common.bookmark'),
-          headline: t('background.failedRecommendation'),
-          body: t('content.tryBookmarkingAgain'),
+          title: context.originalTitle || t("common.bookmark"),
+          headline: t("background.failedRecommendation"),
+          body: t("content.tryBookmarkingAgain"),
           actions: [],
           autoDismissMs: 4000,
-          autoActionId: 'dismiss_error',
+          autoActionId: "dismiss_error",
         },
       };
     }
 
     const autoAcceptEnabled = context.settings.raw.autoAcceptEnabled;
-    const autoAcceptSeconds = Math.max(0, Math.trunc(context.settings.raw.autoAcceptSeconds));
+    const autoAcceptSeconds = Math.max(
+      0,
+      Math.trunc(context.settings.raw.autoAcceptSeconds),
+    );
 
     return {
-      type: 'card',
+      type: "card",
       card: {
         id: `recommendation:${context.bookmarkId}`,
-        policyId: 'recommendation-policy',
-        kind: 'recommendation',
+        policyId: "recommendation-policy",
+        kind: "recommendation",
         bookmarkId: context.bookmarkId,
         url: context.url,
         title: suggestion.title,
-        headline: suggestion.suggestedFolder || t('common.bookmarksBar'),
+        headline: suggestion.suggestedFolder || t("common.bookmarksBar"),
         body: suggestion.title,
         badge: `${Math.round(suggestion.confidence * 100)}%`,
         actions: [
           {
-            id: 'reject',
-            label: t('content.reject'),
-            variant: 'secondary',
-            intent: 'submit',
+            id: "reject",
+            label: t("content.reject"),
+            variant: "secondary",
+            intent: "submit",
           },
           {
-            id: 'accept',
-            label: t('content.accept'),
-            variant: 'primary',
-            intent: 'submit',
+            id: "accept",
+            label: t("content.accept"),
+            variant: "primary",
+            intent: "submit",
             payload: {
               suggestedFolder: suggestion.suggestedFolder,
               title: suggestion.title,
@@ -137,46 +149,62 @@ export const recommendationPolicy: BookmarkPolicy = {
             },
           },
         ],
-        autoActionId: autoAcceptEnabled && autoAcceptSeconds > 0 ? 'accept' : undefined,
-        autoDismissMs: autoAcceptEnabled && autoAcceptSeconds > 0 ? autoAcceptSeconds * 1000 : undefined,
+        autoActionId:
+          autoAcceptEnabled && autoAcceptSeconds > 0 ? "accept" : undefined,
+        autoDismissMs:
+          autoAcceptEnabled && autoAcceptSeconds > 0
+            ? autoAcceptSeconds * 1000
+            : undefined,
       },
     };
   },
   async executeAction({ card, actionId, payload, services }) {
     switch (actionId) {
-      case 'accept': {
+      case "accept": {
         services.store.suppress(card.bookmarkId, 8000);
         services.store.removeJob(card.bookmarkId);
 
         const bookmarksBarId = await services.getBookmarksBarId();
-        if (!bookmarksBarId) return { type: 'noop' };
-        const suggestedFolder = payload?.suggestedFolder ?? '';
+        if (!bookmarksBarId) return { type: "noop" };
+        const suggestedFolder = payload?.suggestedFolder ?? "";
         const title = payload?.title ?? card.title;
-        const summary = payload?.summary ?? '';
-        const parentId = await services.findOrCreateFolderPath(bookmarksBarId, suggestedFolder);
+        const summary = payload?.summary ?? "";
+        const parentId = await services.findOrCreateFolderPath(
+          bookmarksBarId,
+          suggestedFolder,
+        );
         await services.moveBookmark(card.bookmarkId, parentId);
-        const updatedBookmark = await services.updateBookmarkTitle(card.bookmarkId, title);
+        const updatedBookmark = await services.updateBookmarkTitle(
+          card.bookmarkId,
+          title,
+        );
 
         const settings = await services.getResolvedSettings();
-        if (!settings.features.summary.enabled || !updatedBookmark.url || !summary.trim()) {
-          return { type: 'completed' };
+        if (
+          !settings.features.summary.enabled ||
+          !updatedBookmark.url ||
+          !summary.trim()
+        ) {
+          return { type: "completed" };
         }
         await services.upsertBookmarkSummary({
           bookmarkId: updatedBookmark.id,
           url: updatedBookmark.url,
           title: updatedBookmark.title,
-          folderPath: suggestedFolder || (await services.getBookmarksBarLabel(settings.raw)),
+          folderPath:
+            suggestedFolder ||
+            (await services.getBookmarksBarLabel(settings.raw)),
           summary: summary.trim(),
         });
-        return { type: 'completed' };
+        return { type: "completed" };
       }
-      case 'reject':
-      case 'dismiss_error':
+      case "reject":
+      case "dismiss_error":
         services.store.suppress(card.bookmarkId, 2000);
         services.store.removeJob(card.bookmarkId);
-        return { type: 'dismissed' };
+        return { type: "dismissed" };
       default:
-        return { type: 'noop' };
+        return { type: "noop" };
     }
   },
 };
