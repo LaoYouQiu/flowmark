@@ -6,6 +6,8 @@ const MAX_HISTORY_ENTRIES = 30;
 export async function appendOperationHistoryEntry(
   entry: Omit<OperationHistoryEntry, 'id' | 'createdAt'>,
 ): Promise<void> {
+  // Keep history small and useful: only store operations that actually changed
+  // bookmarks, newest first, capped to the most recent entries.
   if (entry.changes.length === 0) return;
 
   const history = await listOperationHistoryEntries();
@@ -21,6 +23,8 @@ export async function appendOperationHistoryEntry(
 }
 
 export async function listOperationHistoryEntries(): Promise<OperationHistoryEntry[]> {
+  // Browser storage is untyped and can contain stale data from older versions,
+  // so validate the minimal shape before exposing entries to the UI.
   const raw = await browser.storage.local.get(STORAGE_KEY);
   const value = raw[STORAGE_KEY];
   if (!Array.isArray(value)) return [];

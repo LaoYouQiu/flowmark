@@ -4,6 +4,9 @@ import type {
   BookmarkCardUpdatePayload,
   ApplyFolderMergeIssueRequest,
   ApplyFolderMergeIssueResult,
+  BookmarkBackupDownload,
+  BookmarkBackupFormat,
+  BookmarkHealthPreview,
   DuplicateBookmarkPreview,
   DuplicateBookmarkMergeSelection,
   ExistingBookmarkApplyActions,
@@ -14,11 +17,15 @@ import type {
   OperationHistoryEntry,
   SmartOrganizeJobSnapshot,
   SummaryToolPreview,
+  SummarySearchResult,
   SubmitBookmarkCardActionRequest,
   UndoOperationHistoryResult,
 } from './types';
 
 export interface ProtocolMap {
+  // Typed message contract between content scripts, UI pages, and background.
+  // Keeping the payloads here makes feature modules evolve without stringly
+  // typed request/response pairs scattered through the extension.
   bookmarkCardUpdate(payload: BookmarkCardUpdatePayload): void;
   submitBookmarkCardAction(payload: SubmitBookmarkCardActionRequest): void;
   getPageContent(payload: GetPageContentRequest): PageContent;
@@ -38,10 +45,13 @@ export interface ProtocolMap {
   }): { removedCount: number };
   generateFolderAuditPreview(): FolderAuditPreview;
   applyFolderMergeIssue(payload: ApplyFolderMergeIssueRequest): ApplyFolderMergeIssueResult;
+  generateBookmarkHealthPreview(payload?: { limit?: number }): BookmarkHealthPreview;
+  exportBookmarkBackup(payload?: { format?: BookmarkBackupFormat }): BookmarkBackupDownload;
   listOperationHistory(): { entries: OperationHistoryEntry[] };
   undoOperationHistoryEntry(payload: { entryId: string }): UndoOperationHistoryResult;
   generateSummaryToolPreview(): SummaryToolPreview;
   generateBookmarkSummaries(payload: { bookmarkIds: string[] }): { updatedCount: number };
+  searchBookmarkSummaries(payload: { query: string; limit?: number }): SummarySearchResult;
 }
 
 export const messaging = defineExtensionMessaging<ProtocolMap>();

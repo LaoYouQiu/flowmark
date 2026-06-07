@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show } from 'solid-js';
 
 import { Button } from '@/src/components/Button';
+import { RiskSummary, type RiskSummaryItem } from '@/src/organize/RiskSummary';
 import type { WorkspaceBaseProps } from '@/src/organize/types';
 import { StatusBadge } from '@/src/components/StatusBadge';
 import { useI18n } from '@/src/shared/i18n';
@@ -8,6 +9,7 @@ import { messaging } from '@/src/shared/messaging';
 import type {
   ExistingBookmarkApplyActions,
   ExistingBookmarkPlanAction,
+  ExistingBookmarkSuggestionReason,
   ExistingBookmarkSuggestionItem,
   ExistingBookmarkSuggestionPreview,
   SmartOrganizeJobSnapshot,
@@ -17,6 +19,8 @@ type BatchState = 'idle' | 'loading' | 'batching' | 'ready' | 'applying' | 'appl
 
 export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
   const { t } = useI18n(props.locale);
+  // This workspace has two phases: generate a preview/job of suggested actions,
+  // then apply the selected subset with user-chosen action categories.
   const [batchPreview, setBatchPreview] = createSignal<ExistingBookmarkSuggestionPreview | null>(null);
   const [batchState, setBatchState] = createSignal<BatchState>('idle');
   const [batchMessage, setBatchMessage] = createSignal<string | null>(null);
@@ -43,11 +47,15 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
   });
 
   const loadPreview = async () => {
+    // The background decides whether the scan is synchronous or a batch job
+    // based on bookmark count; the UI consumes both through the same snapshot.
     setBatchState('loading');
     setBatchMessage(null);
     setJobSnapshot(null);
     try {
-      const job = await messaging.sendMessage('startSmartOrganizeJob', { batchSize: 5 });
+      // Batch size is controlled by settings; an empty payload lets background
+      // apply the latest saved budget preference.
+      const job = await messaging.sendMessage('startSmartOrganizeJob', {});
       await consumeSmartOrganizeJob(job);
     } catch {
       setBatchState('error');
@@ -56,6 +64,8 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
   };
 
   const consumeSmartOrganizeJob = async (initialJob: SmartOrganizeJobSnapshot) => {
+    // Poll one bounded batch at a time so suggestions can appear progressively
+    // and the UI remains responsive for large bookmark libraries.
     let current = initialJob;
     setJobSnapshot(current);
     setBatchPreview(toPreview(current));
@@ -118,6 +128,8 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
     const preview = batchPreview();
     if (!preview) return;
 
+    // Send only the selected suggestions back to the background. The preview
+    // shape stays the same, which keeps the apply API simple.
     const allowedIds = new Set(applyAll ? preview.suggestions.map((item) => item.bookmarkId) : selectedIds());
     const payload: ExistingBookmarkSuggestionPreview = {
       ...preview,
@@ -148,6 +160,11 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
       tone: 'primary',
       content: () => (
         <div class="space-y-3">
+          <RiskSummary
+            title={t('risk.summaryTitle')}
+            items={buildOrganizeRiskItems(payload.suggestions, applyActions(), t)}
+            note={t('risk.organizeNote')}
+          />
           <div class="text-xs font-medium uppercase tracking-[0.14em] text-neutral-400">
             {t('confirm.organizeStepsTitle')}
           </div>
@@ -376,6 +393,65 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
   );
 }
 
+function buildOrganizeRiskItems(
+  suggestions: ExistingBookmarkSuggestionItem[],
+  actions: ExistingBookmarkApplyActions,
+  t: ReturnType<typeof useI18n>['t'],
+): RiskSummaryItem[] {
+  // Count the concrete plan actions that will still be enabled after the user
+  // toggles apply categories in the confirmation dialog.
+  const actionCounts = suggestions.reduce(
+    (counts, item) => {
+      if (actions.moveToFolder && hasPlanAction(item.actions, 'create_folder')) {
+        counts.createFolders += 1;
+      }
+      if (actions.moveToFolder && hasPlanAction(item.actions, 'move')) {
+        counts.moveBookmarks += 1;
+      }
+      if (actions.renameTitle && hasPlanAction(item.actions, 'rename')) {
+        counts.renameBookmarks += 1;
+      }
+      if (actions.updateSummary && hasPlanAction(item.actions, 'summary')) {
+        counts.updateSummaries += 1;
+      }
+      return counts;
+    },
+    {
+      createFolders: 0,
+      moveBookmarks: 0,
+      renameBookmarks: 0,
+      updateSummaries: 0,
+    },
+  );
+
+  return [
+    {
+      label: t('risk.createFolders'),
+      value: actionCounts.createFolders,
+      tone: 'warning',
+    },
+    {
+      label: t('risk.moveBookmarks'),
+      value: actionCounts.moveBookmarks,
+    },
+    {
+      label: t('risk.renameBookmarks'),
+      value: actionCounts.renameBookmarks,
+    },
+    {
+      label: t('risk.updateSummaries'),
+      value: actionCounts.updateSummaries,
+    },
+  ];
+}
+
+function hasPlanAction(
+  actions: ExistingBookmarkPlanAction[],
+  type: ExistingBookmarkPlanAction['type'],
+): boolean {
+  return actions.some((action) => action.type === type);
+}
+
 function SuggestionCard(props: {
   item: ExistingBookmarkSuggestionItem;
   checked: boolean;
@@ -384,6 +460,8 @@ function SuggestionCard(props: {
 }) {
   const { t } = useI18n(props.locale);
   const suggestedFolder = createMemo(() => props.item.suggestedFolder || t('common.bookmarksBar'));
+  // A suggestion can be useful even when the folder stays the same: it may only
+  // rename the bookmark or write a summary, so the card labels that case clearly.
   const folderUnchanged = createMemo(() => suggestedFolder() === props.item.currentFolderPath);
 
   return (
@@ -442,6 +520,15 @@ function SuggestionCard(props: {
         </Show>
       </div>
 
+      <div class="mt-3 rounded-md border border-neutral-200 bg-white px-3 py-3">
+        <div class="text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-400">
+          {t('organize.reasonTitle')}
+        </div>
+        <p class="mt-2 text-sm leading-6 text-neutral-600">
+          {reasonText(props.item.reason, props.locale)}
+        </p>
+      </div>
+
       <div class="mt-3 flex flex-wrap gap-2">
         {props.item.actions.map((action) => (
           <ActionBadge action={action} locale={props.locale} />
@@ -451,11 +538,33 @@ function SuggestionCard(props: {
   );
 }
 
+function reasonText(reason: ExistingBookmarkSuggestionReason, locale: WorkspaceBaseProps['locale']): string {
+  const { t } = useI18n(locale);
+  switch (reason) {
+    case 'new_folder':
+      return t('organize.reasonNewFolder');
+    case 'move_folder':
+      return t('organize.reasonMoveFolder');
+    case 'folder_and_metadata':
+      return t('organize.reasonFolderAndMetadata');
+    case 'metadata_only':
+      return t('organize.reasonMetadataOnly');
+    case 'rename_only':
+      return t('organize.reasonRenameOnly');
+    case 'summary_only':
+      return t('organize.reasonSummaryOnly');
+    case 'keep':
+      return t('organize.reasonKeep');
+  }
+}
+
 function ActionBadge(props: {
   action: ExistingBookmarkPlanAction;
   locale: WorkspaceBaseProps['locale'];
 }) {
   const { t } = useI18n(props.locale);
+  // Action badges mirror the background plan actions, giving users a compact
+  // checklist of what applying this suggestion can change.
   const label = createMemo(() => {
     switch (props.action.type) {
       case 'create_folder':

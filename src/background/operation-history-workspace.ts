@@ -1,4 +1,4 @@
-import { setBookmarkSummary } from '@/src/shared/bookmark-summary';
+import { removeBookmarkSummary, setBookmarkSummary } from '@/src/shared/bookmark-summary';
 import { messaging } from '@/src/shared/messaging';
 import {
   listOperationHistoryEntries,
@@ -11,6 +11,8 @@ import type {
 } from '@/src/shared/types';
 
 export function initOperationHistoryWorkspace(): void {
+  // Expose operation history to the organize page. History entries are created
+  // by mutating workspaces such as duplicate cleanup and folder merge.
   messaging.onMessage('listOperationHistory', async () => ({
     entries: await listOperationHistoryEntries(),
   }));
@@ -21,6 +23,8 @@ export function initOperationHistoryWorkspace(): void {
 }
 
 async function undoOperationHistoryEntry(entryId: string): Promise<UndoOperationHistoryResult> {
+  // Undo in reverse order so folder deletes are restored after any later child
+  // changes have been considered. Missing parents/bookmarks are skipped.
   const history = await listOperationHistoryEntries();
   const entry = history.find((item) => item.id === entryId);
   if (!entry) return { restoredCount: 0, skippedCount: 0 };
@@ -46,6 +50,8 @@ async function undoOperationHistoryEntry(entryId: string): Promise<UndoOperation
 }
 
 async function undoChange(change: OperationHistoryChange): Promise<boolean> {
+  // Each change type stores just enough original state to restore the user's
+  // bookmark structure without replaying the whole operation.
   switch (change.type) {
     case 'move_bookmark':
       if (!(await bookmarkExists(change.bookmarkId)) || !(await folderExists(change.fromParentId))) {
@@ -74,6 +80,15 @@ async function undoChange(change: OperationHistoryChange): Promise<boolean> {
       }
       return true;
     }
+
+    case 'update_summary':
+      if (!(await bookmarkExists(change.bookmarkId))) return false;
+      if (change.fromSummary) {
+        await setBookmarkSummary(change.fromSummary);
+      } else {
+        await removeBookmarkSummary(change.bookmarkId);
+      }
+      return true;
 
     case 'delete_empty_folder':
       if (!(await folderExists(change.parentId))) return false;

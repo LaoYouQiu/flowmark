@@ -4,7 +4,9 @@ export type OrganizerModuleId =
   | 'smart-organize'
   | 'duplicate-cleanup'
   | 'folder-audit'
-  | 'summary-tools';
+  | 'bookmark-health'
+  | 'summary-tools'
+  | 'summary-search';
 
 export type ConfirmActionOptions = {
   title: string;

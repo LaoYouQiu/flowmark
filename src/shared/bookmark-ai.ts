@@ -31,6 +31,9 @@ export async function getAiConfigError(
       | 'background.invalidAiBaseUrl',
   ) => string,
 ): Promise<string | null> {
+  // Validate the provider setup before the user triggers a recommendation.
+  // Extension host permissions are origin-based, so the configured Base URL
+  // must also be granted in manifest/runtime permissions.
   if (!settings.aiBaseURL || !settings.aiModel) {
     return t('background.aiNotConfigured');
   }
@@ -49,7 +52,7 @@ export async function getAiConfigError(
 }
 
 export async function getBookmarkSuggestion(input: {
-  settings: Pick<FlowmarkSettings, 'aiBaseURL' | 'aiApiKey' | 'aiModel' | 'sendPageText'>;
+  settings: Pick<FlowmarkSettings, 'aiBaseURL' | 'aiApiKey' | 'aiModel' | 'sendPageText' | 'organizeIntensity'>;
   locale: Locale;
   url: string;
   originalTitle: string;
@@ -70,7 +73,10 @@ export async function getBookmarkSuggestion(input: {
   const pageTitle = input.pageContent.title || input.originalTitle;
   const headings = input.pageContent.headings.slice(0, MAX_HEADINGS);
   const outputLanguage = input.locale === 'zh-CN' ? 'Simplified Chinese' : 'English';
+  const intensityRule = toOrganizeIntensityRule(input.settings.organizeIntensity);
 
+  // Folder candidates are converted to compact F1/F2 rows. AI chooses a short
+  // ID, while FlowMark keeps the real path mapping local and deterministic.
   const folderOptions = input.folderCandidates
     ? toFolderOptionsFromCandidates(input.folderCandidates, input.bookmarksBarLabel)
     : toFolderOptions(input.folderPaths ?? [], input.bookmarksBarLabel);
@@ -79,6 +85,7 @@ export async function getBookmarkSuggestion(input: {
     'You are a bookmark organizer. Return a JSON object with a folderId, suggested folder path, short improved title, and one-sentence summary.' +
     '\nRules:' +
     '\n- Prefer the user\'s existing organization habits and choose one provided folderId whenever possible.' +
+    `\n- Organization intensity: ${intensityRule}` +
     '\n- Use folderId NEW only when none of the candidates fits.' +
     '\n- For an existing folderId, suggestedFolder may be empty because the app will map the ID back to the folder path.' +
     '\n- For NEW, suggestedFolder must be a "-" separated relative path with at most 4 segments.' +
@@ -103,6 +110,9 @@ export async function getBookmarkSuggestion(input: {
     const prompt = promptParts.join('\n\n');
 
     try {
+      // Prefer structured outputs when the provider supports them. Some
+      // OpenAI-compatible providers do not, so the plain JSON fallback below
+      // keeps the extension usable across more endpoints.
       const result = await generateText({
         model,
         system,
@@ -158,6 +168,8 @@ function normalizeSuggestion(
     summaryEnabled: boolean;
   },
 ): BookmarkSuggestion {
+  // Never trust the model response directly: clamp confidence, shorten titles,
+  // suppress summaries when disabled, and resolve folder IDs to known paths.
   const existingFolder = options.folderOptions.find((option) => option.id === value.folderId);
   const folder = existingFolder
     ? existingFolder.path
@@ -220,6 +232,8 @@ function toFolderOptionsFromCandidates(
 }
 
 function withParentIds(options: FolderOption[], bookmarksBarLabel?: string): FolderOption[] {
+  // Add an explicit ROOT row so multiple first-level folders share a clear
+  // parent instead of looking like several unrelated empty-parent roots.
   const hasRoot = options.some((option) => option.id === 'ROOT');
   const idByPath = new Map(options.map((option) => [option.path || bookmarksBarLabel || '', option.id]));
   const resolved = options.map((option) => {
@@ -262,6 +276,7 @@ function formatFolderOptions(options: FolderOption[]): string {
       ].join(',');
     })
     .join('\n');
+  // Short table rows save tokens versus repeating field names for each folder.
   return `Folders [id,name,parent,depth,count]\n${rows}`;
 }
 
@@ -301,5 +316,16 @@ function extractFirstJsonObject(text: string): unknown | null {
     return JSON.parse(candidate);
   } catch {
     return null;
+  }
+}
+
+function toOrganizeIntensityRule(intensity: FlowmarkSettings['organizeIntensity']): string {
+  switch (intensity) {
+    case 'conservative':
+      return 'conservative. Prefer the current folder, avoid creating new folders, and suggest metadata-only improvements unless the current folder is clearly wrong.';
+    case 'aggressive':
+      return 'aggressive. You may suggest stronger folder changes or a new folder when it creates a clearer structure.';
+    case 'balanced':
+      return 'balanced. Prefer existing folders, move when there is a clear better fit, and create a new folder only with a strong reason.';
   }
 }

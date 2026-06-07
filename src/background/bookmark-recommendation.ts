@@ -38,6 +38,9 @@ const policyList = [duplicatePolicy, pageQualityPolicy, recommendationPolicy] as
 const policyRegistry = new Map<string, BookmarkPolicy>(policyList.map((policy) => [policy.id, policy]));
 
 export function initBookmarkRecommendation(): void {
+  // The live recommendation flow is a small policy pipeline:
+  // duplicate check -> page quality check -> AI recommendation.
+  // Policies may stop for user input, then continue from the next policy.
   const store = new BookmarkEvaluationStore();
 
   const services: BookmarkActionServices = {
@@ -100,6 +103,8 @@ export function initBookmarkRecommendation(): void {
       state: 'pending_confirmation',
     });
 
+    // Give the browser a short moment to finish bookmark creation and let the
+    // content script mount before sending the first decision card.
     setTimeout(() => {
       store.enqueue(id);
       void drainQueue();
@@ -176,6 +181,8 @@ export function initBookmarkRecommendation(): void {
         store.setContinuation(bookmarkId);
 
         let stopped = false;
+        // Run policies in order until one needs a visible decision card or the
+        // flow reaches a terminal state.
         for (let policyIndex = startIndex; policyIndex < policyList.length; policyIndex += 1) {
           const policy = policyList[policyIndex];
           if (!policy.enabled(context)) continue;
@@ -204,6 +211,8 @@ export function initBookmarkRecommendation(): void {
   }
 
   async function ensureContext(job: BookmarkJob): Promise<BookmarkEvaluationContext | null> {
+    // Context is cached per bookmark because all policies need the same page
+    // snapshot, settings, locale, and bookmark tree.
     if (job.context) return job.context;
 
     const settings = await getResolvedSettings();
@@ -235,6 +244,8 @@ export function initBookmarkRecommendation(): void {
     policyIndex: number,
     result: PolicyResult,
   ): Promise<boolean> {
+    // Return true when the current job should pause or finish. A pass means the
+    // next policy can evaluate immediately in the same drain loop.
     if (result.type === 'pass') return false;
     if (result.type === 'terminal') {
       store.setState(job.bookmarkId, result.reason === 'completed' ? 'completed' : 'dismissed');
@@ -298,6 +309,8 @@ async function fetchPageContent(
       tabId,
     );
   } catch {
+    // If the content script is not reachable, keep the recommendation pipeline
+    // alive with a minimal URL-only snapshot.
     return {
       url,
       title: '',
@@ -339,6 +352,8 @@ async function getBookmarksBarLabel(settings?: Parameters<typeof getCurrentLocal
 }
 
 async function findOrCreateFolderPath(bookmarksBarId: string, folderPath: string): Promise<string> {
+  // Folder paths use "-" as FlowMark's relative separator. Create missing
+  // segments one by one under the bookmarks bar.
   const parts = folderPath
     .split('-')
     .map((part) => part.trim())
@@ -395,6 +410,8 @@ async function upsertBookmarkSummary(input: {
 }
 
 async function syncBookmarkSummaryRecord(bookmarkId: string): Promise<void> {
+  // Browser bookmark edits can happen outside FlowMark. Keep the stored summary
+  // record aligned with the current title/folder, or remove stale records.
   const record = await getBookmarkSummary(bookmarkId);
   if (!record) return;
 

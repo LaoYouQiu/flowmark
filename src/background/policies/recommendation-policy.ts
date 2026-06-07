@@ -17,6 +17,8 @@ export const recommendationPolicy: BookmarkPolicy = {
     return context.settings.features.recommendation.enabled;
   },
   getProgressCard(context) {
+    // Shown while the AI request is in flight so users understand why the
+    // newly-created bookmark has a temporary FlowMark card.
     const { t } = createTranslator(context.locale);
     return {
       id: `loading:${context.bookmarkId}`,
@@ -73,6 +75,9 @@ export const recommendationPolicy: BookmarkPolicy = {
       currentBookmark?.parentId ?? null,
       bookmarksBarLabel,
     );
+    // Keep AI focused on the user's existing habits by sending only relevant
+    // candidate folders instead of the full bookmark tree. The saved intensity
+    // setting further controls how willing the model should be to move/create.
     const folderCandidates = selectFolderCandidateNodes({
       tree: context.bookmarkTreeSnapshot,
       bookmarksBarId: context.bookmarksBarId,
@@ -81,6 +86,7 @@ export const recommendationPolicy: BookmarkPolicy = {
       title: context.originalTitle,
       pageContent: context.pageContent,
       currentFolderPath,
+      maxCandidates: context.settings.raw.folderCandidateLimit,
     });
     const suggestion = await getBookmarkSuggestion({
       settings: context.settings.raw,
@@ -161,6 +167,8 @@ export const recommendationPolicy: BookmarkPolicy = {
   async executeAction({ card, actionId, payload, services }) {
     switch (actionId) {
       case "accept": {
+        // Accept applies the model's plan through local, validated services:
+        // create/move folder path, update title, then persist optional summary.
         services.store.suppress(card.bookmarkId, 8000);
         services.store.removeJob(card.bookmarkId);
 

@@ -2,14 +2,17 @@ import { getBookmarkSuggestion } from '@/src/shared/bookmark-ai';
 import { getBookmarkSummary, normalizeBookmarkUrl, setBookmarkSummary } from '@/src/shared/bookmark-summary';
 import { createTranslator, getCurrentLocale } from '@/src/shared/i18n';
 import { messaging } from '@/src/shared/messaging';
+import { appendOperationHistoryEntry } from '@/src/shared/operation-history';
 import { getResolvedSettings } from '@/src/shared/settings';
 import type {
   BookmarkSummaryRecord,
   BookmarkTreeNodeSnapshot,
   ExistingBookmarkApplyActions,
   ExistingBookmarkPlanAction,
+  ExistingBookmarkSuggestionReason,
   ExistingBookmarkSuggestionItem,
   ExistingBookmarkSuggestionPreview,
+  OperationHistoryChange,
   PageContent,
   SmartOrganizeJobSnapshot,
 } from '@/src/shared/types';
@@ -22,7 +25,6 @@ import {
 } from './engine/helpers';
 
 const SMART_ORGANIZE_BATCH_THRESHOLD = 30;
-const DEFAULT_SMART_ORGANIZE_BATCH_SIZE = 5;
 const PAGE_TEXT_LIMIT = 5000;
 
 type SmartOrganizeJob = SmartOrganizeJobSnapshot & {
@@ -33,6 +35,8 @@ type SmartOrganizeJob = SmartOrganizeJobSnapshot & {
 let activeSmartOrganizeJob: SmartOrganizeJob | null = null;
 
 export function initExistingBookmarkOnboarding(): void {
+  // Register the organize page API for existing-bookmark scans. Small libraries
+  // can return a preview immediately; large libraries use the job endpoints.
   messaging.onMessage('generateExistingBookmarkPreview', async () => {
     return await generateExistingBookmarkPreview();
   });
@@ -55,6 +59,8 @@ export function initExistingBookmarkOnboarding(): void {
 }
 
 async function generateExistingBookmarkPreview(): Promise<ExistingBookmarkSuggestionPreview> {
+  // Synchronous path for small bookmark sets. It reuses the same per-bookmark
+  // planner as the batch job so both flows produce identical suggestion items.
   const settings = await getResolvedSettings();
   const locale = await getCurrentLocale(settings.raw);
   const { t } = createTranslator(locale);
@@ -94,9 +100,12 @@ async function generateExistingBookmarkPreview(): Promise<ExistingBookmarkSugges
 }
 
 async function startSmartOrganizeJob(batchSize?: number): Promise<SmartOrganizeJobSnapshot> {
+  const settings = await getResolvedSettings();
   const tree = await browser.bookmarks.getTree();
   const bookmarkNodes = flattenBookmarkNodes(tree).filter(isOrganizableBookmarkNode);
 
+  // Keep the UI simple for small libraries: no progress bar or polling when
+  // the full preview can finish in one request.
   if (bookmarkNodes.length <= SMART_ORGANIZE_BATCH_THRESHOLD) {
     const preview = await generateExistingBookmarkPreview();
     return {
@@ -110,7 +119,7 @@ async function startSmartOrganizeJob(batchSize?: number): Promise<SmartOrganizeJ
     };
   }
 
-  const normalizedBatchSize = Math.max(1, Math.min(20, Math.trunc(batchSize ?? DEFAULT_SMART_ORGANIZE_BATCH_SIZE)));
+  const normalizedBatchSize = Math.max(1, Math.min(20, Math.trunc(batchSize ?? settings.raw.smartOrganizeBatchSize)));
   activeSmartOrganizeJob = {
     id: `${Date.now()}:${Math.random().toString(36).slice(2)}`,
     status: 'running',
@@ -152,6 +161,8 @@ async function runSmartOrganizeJobBatch(jobId: string): Promise<SmartOrganizeJob
     const nodesById = new Map(flattenBookmarkNodes(tree).map((node) => [node.id, node]));
     const end = Math.min(job.cursor + job.batchSize, job.bookmarkIds.length);
 
+    // Process a bounded slice per call so the organize UI can show progress and
+    // resume after a failed batch without losing previous suggestions.
     for (; job.cursor < end; job.cursor += 1) {
       const node = nodesById.get(job.bookmarkIds[job.cursor] ?? '');
       job.scanned += 1;
@@ -207,6 +218,8 @@ async function generateSuggestionForNode(input: {
   locale: Awaited<ReturnType<typeof getCurrentLocale>>;
   untitledFallback: string;
 }): Promise<ExistingBookmarkSuggestionItem | null> {
+  // Build one structured plan for an existing bookmark. The AI chooses a target
+  // from local candidates; local code then translates the result into actions.
   const { node, tree, bookmarksBarId, bookmarksBarLabel, settings, locale, untitledFallback } = input;
   if (!node.url) return null;
 
@@ -229,6 +242,7 @@ async function generateSuggestionForNode(input: {
     title: node.title ?? '',
     pageContent,
     currentFolderPath,
+    maxCandidates: settings.raw.folderCandidateLimit,
   });
   const suggestion = await getBookmarkSuggestion({
     settings: settings.raw,
@@ -247,19 +261,25 @@ async function generateSuggestionForNode(input: {
     currentFolderPath,
     existingFolderPaths,
     bookmarksBarLabel,
+    organizeIntensity: settings.raw.organizeIntensity,
     originalTitle: node.title ?? '',
     suggestedFolder: suggestion.suggestedFolder,
     suggestedTitle: suggestion.title,
     summary: suggestion.summary,
   });
   if (actions.length === 1 && actions[0]?.type === 'keep') return null;
+  // Keep the displayed folder aligned with the actual plan. If intensity rules
+  // suppress movement, the card should present this as metadata-only cleanup.
+  const effectiveSuggestedFolder = actions.some((action) => action.type === 'move')
+    ? suggestion.suggestedFolder
+    : currentFolderPath;
 
   return {
     bookmarkId: node.id,
     url: node.url,
     originalTitle: node.title ?? '',
     currentFolderPath,
-    suggestedFolder: suggestion.suggestedFolder,
+    suggestedFolder: effectiveSuggestedFolder,
     suggestedTitle: suggestion.title,
     confidence: suggestion.confidence,
     summary: suggestion.summary,
@@ -295,6 +315,7 @@ async function applyExistingBookmarkPreview(input: {
   if (!bookmarksBarId) return { appliedCount: 0 };
 
   let appliedCount = 0;
+  const historyChanges: OperationHistoryChange[] = [];
 
   for (const item of preview.suggestions) {
     try {
@@ -308,10 +329,28 @@ async function applyExistingBookmarkPreview(input: {
 
       if (actions.moveToFolder && moveAction?.type === 'move') {
         const parentId = await findOrCreateFolderPath(bookmarksBarId, moveAction.targetFolderPath);
+        if (bookmark.parentId && bookmark.parentId !== parentId) {
+          historyChanges.push({
+            type: 'move_bookmark',
+            bookmarkId: item.bookmarkId,
+            title: bookmark.title ?? item.originalTitle,
+            url: bookmark.url,
+            fromParentId: bookmark.parentId,
+            toParentId: parentId,
+          });
+        }
         await browser.bookmarks.move(item.bookmarkId, { parentId });
       }
 
       if (actions.renameTitle && renameAction?.type === 'rename') {
+        if ((bookmark.title ?? '') !== renameAction.title) {
+          historyChanges.push({
+            type: 'rename_bookmark',
+            bookmarkId: item.bookmarkId,
+            fromTitle: bookmark.title ?? item.originalTitle,
+            toTitle: renameAction.title,
+          });
+        }
         await browser.bookmarks.update(item.bookmarkId, { title: renameAction.title });
       }
 
@@ -340,6 +379,12 @@ async function applyExistingBookmarkPreview(input: {
             createdAt: existing?.createdAt ?? now,
             updatedAt: now,
           };
+          historyChanges.push({
+            type: 'update_summary',
+            bookmarkId: item.bookmarkId,
+            fromSummary: existing,
+            toSummary: record,
+          });
           await setBookmarkSummary(record);
         }
       }
@@ -350,6 +395,12 @@ async function applyExistingBookmarkPreview(input: {
     }
   }
 
+  await appendOperationHistoryEntry({
+    kind: 'smart_organize',
+    label: `Applied ${appliedCount} smart organize updates`,
+    changes: historyChanges,
+  });
+
   return { appliedCount };
 }
 
@@ -357,17 +408,23 @@ function buildPlanActions(input: {
   currentFolderPath: string;
   existingFolderPaths: Set<string>;
   bookmarksBarLabel: string;
+  organizeIntensity: Awaited<ReturnType<typeof getResolvedSettings>>['raw']['organizeIntensity'];
   originalTitle: string;
   suggestedFolder: string;
   suggestedTitle: string;
   summary: string;
 }): ExistingBookmarkPlanAction[] {
+  // Translate the normalized AI suggestion into explicit, user-reviewable
+  // operations. Destructive actions are intentionally not generated here.
   const actions: ExistingBookmarkPlanAction[] = [];
   const targetFolderPath = input.suggestedFolder || input.bookmarksBarLabel;
-  const folderChanged = targetFolderPath !== input.currentFolderPath;
+  const folderChanged =
+    input.organizeIntensity !== 'conservative' &&
+    targetFolderPath !== input.currentFolderPath;
 
   if (folderChanged) {
-    if (!input.existingFolderPaths.has(targetFolderPath)) {
+    const allowNewFolder = input.organizeIntensity === 'aggressive';
+    if (!input.existingFolderPaths.has(targetFolderPath) && allowNewFolder) {
       const parts = targetFolderPath.split('-').map((part) => part.trim()).filter(Boolean);
       const folderName = parts.at(-1) ?? targetFolderPath;
       const parentFolderPath = parts.length > 1
@@ -380,10 +437,15 @@ function buildPlanActions(input: {
         targetFolderPath,
       });
     }
-    actions.push({
-      type: 'move',
-      targetFolderPath,
-    });
+    if (!input.existingFolderPaths.has(targetFolderPath) && !allowNewFolder) {
+      // Balanced mode avoids creating new folders during bulk cleanup. The
+      // title/summary actions below can still be applied safely.
+    } else {
+      actions.push({
+        type: 'move',
+        targetFolderPath,
+      });
+    }
   }
 
   const suggestedTitle = input.suggestedTitle.trim();
@@ -417,11 +479,18 @@ function buildLegacyPlanActions(item: ExistingBookmarkSuggestionItem): ExistingB
   return actions.length > 0 ? actions : [{ type: 'keep' }];
 }
 
-function buildPlanReason(actions: ExistingBookmarkPlanAction[]): string {
+function buildPlanReason(actions: ExistingBookmarkPlanAction[]): ExistingBookmarkSuggestionReason {
+  // Keep reason labels derived from the actual actions. That makes the UI
+  // explanation trustworthy even if the model phrased the raw suggestion oddly.
   const actionTypes = new Set(actions.map((action) => action.type));
-  if (actionTypes.has('move')) return 'folder_and_metadata';
-  if (actionTypes.has('rename') || actionTypes.has('summary')) return 'metadata_only';
   if (actionTypes.has('create_folder')) return 'new_folder';
+  if (actionTypes.has('move') && (actionTypes.has('rename') || actionTypes.has('summary'))) {
+    return 'folder_and_metadata';
+  }
+  if (actionTypes.has('move')) return 'move_folder';
+  if (actionTypes.has('rename') && actionTypes.has('summary')) return 'metadata_only';
+  if (actionTypes.has('rename')) return 'rename_only';
+  if (actionTypes.has('summary')) return 'summary_only';
   return 'keep';
 }
 

@@ -12,6 +12,8 @@ type Props = {
 const EXIT_ANIMATION_MS = 240;
 
 export function BookmarkSuggestionPill(props: Props) {
+  // The pill is a generic decision card renderer. Background policies decide
+  // the card kind/actions; the content UI only displays and submits choices.
   const [exiting, setExiting] = createSignal(false);
   const [secondsLeft, setSecondsLeft] = createSignal<number>(0);
   const [countdownProgress, setCountdownProgress] = createSignal<number>(0);
@@ -22,6 +24,8 @@ export function BookmarkSuggestionPill(props: Props) {
   const primaryAction = createMemo(() => props.card.actions.find((action) => action.variant === 'primary') ?? null);
 
   const closeWithAnimation = (after?: () => void) => {
+    // Run the action after the exit animation starts so the UI feels responsive
+    // even when the background mutation takes a moment.
     if (exiting()) return;
     setExiting(true);
     window.setTimeout(() => {
@@ -52,6 +56,8 @@ export function BookmarkSuggestionPill(props: Props) {
   };
 
   createEffect(() => {
+    // Recommendation cards can auto-accept with a visible countdown. Other
+    // auto-dismiss cards use a simple timeout without the circular progress UI.
     const autoActionId = props.card.autoActionId;
     const autoDismissMs = props.card.autoDismissMs;
     if (!autoActionId || !autoDismissMs) return;

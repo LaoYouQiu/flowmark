@@ -1,7 +1,10 @@
 export type Locale = "en" | "zh-CN";
 export type LocaleOverride = "auto" | Locale;
+export type OrganizeIntensity = "conservative" | "balanced" | "aggressive";
 
 export interface FlowmarkSettings {
+  // User-facing switches and AI provider settings. The resolved settings layer
+  // turns these raw preferences into per-feature enablement flags.
   enabled: boolean;
   duplicateCheckEnabled: boolean;
   pageQualityFilterEnabled: boolean;
@@ -10,6 +13,9 @@ export interface FlowmarkSettings {
   autoAcceptSeconds: number;
   sendPageText: boolean;
   maxPageChars: number;
+  organizeIntensity: OrganizeIntensity;
+  smartOrganizeBatchSize: number;
+  folderCandidateLimit: number;
   aiBaseURL: string;
   aiApiKey: string;
   aiModel: string;
@@ -25,6 +31,9 @@ export const DEFAULT_SETTINGS: FlowmarkSettings = {
   autoAcceptSeconds: 5,
   sendPageText: false,
   maxPageChars: 5000,
+  organizeIntensity: "balanced",
+  smartOrganizeBatchSize: 5,
+  folderCandidateLimit: 12,
   aiBaseURL: "",
   aiApiKey: "",
   aiModel: "",
@@ -44,6 +53,8 @@ export interface ResolvedFlowmarkSettings {
 }
 
 export interface PageContent {
+  // A compact page snapshot collected by the content script. Background
+  // policies use these signals before deciding whether an AI call is worthwhile.
   url: string;
   title: string;
   description: string;
@@ -67,6 +78,9 @@ export interface BookmarkSuggestion {
 }
 
 export interface BookmarkFolderCandidate {
+  // Candidate folders are a token-conscious view of the user's bookmark tree.
+  // The app sends only these likely folders to AI, then maps the returned ID
+  // back to the real path locally.
   path: string;
   name: string;
   parentPath: string | null;
@@ -75,6 +89,8 @@ export interface BookmarkFolderCandidate {
 }
 
 export type ExistingBookmarkPlanAction =
+  // Smart Organize suggestions are represented as explicit actions so the UI
+  // can show exactly what will happen before applying a recommendation.
   | {
       type: "move";
       targetFolderPath: string;
@@ -105,6 +121,15 @@ export type ExistingBookmarkPlanAction =
       type: "keep";
     };
 
+export type ExistingBookmarkSuggestionReason =
+  | "new_folder"
+  | "move_folder"
+  | "folder_and_metadata"
+  | "metadata_only"
+  | "rename_only"
+  | "summary_only"
+  | "keep";
+
 export interface ExistingBookmarkSuggestionItem {
   bookmarkId: string;
   url: string;
@@ -114,7 +139,7 @@ export interface ExistingBookmarkSuggestionItem {
   suggestedTitle: string;
   confidence: number;
   summary: string;
-  reason: string;
+  reason: ExistingBookmarkSuggestionReason;
   actions: ExistingBookmarkPlanAction[];
 }
 
@@ -125,6 +150,8 @@ export interface ExistingBookmarkSuggestionPreview {
 }
 
 export interface SmartOrganizeJobSnapshot {
+  // Public progress shape for long Smart Organize scans. The background keeps
+  // extra cursor state privately and returns this snapshot to the organize UI.
   id: string;
   status: "running" | "completed" | "failed" | "cancelled";
   total: number;
@@ -150,6 +177,9 @@ export interface DuplicateBookmarkCandidate {
 }
 
 export interface DuplicateBookmarkGroup {
+  // One normalized URL can have many bookmark records with different titles or
+  // folders. The group stores both the recommended merge plan and the user's
+  // chosen keep/delete selection.
   normalizedUrl: string;
   url: string;
   items: DuplicateBookmarkCandidate[];
@@ -188,6 +218,8 @@ export interface DuplicateBookmarkMergeSelection {
 }
 
 export interface FolderAuditIssue {
+  // Folder Audit normalizes several structural concerns into one card shape:
+  // empty folders, sparse folders, deep paths, and similar-path merge candidates.
   id: string;
   path: string;
   type: "empty_folder" | "sparse_folder" | "deep_folder" | "similar_folder";
@@ -220,6 +252,39 @@ export interface FolderAuditPreview {
   issues: FolderAuditIssue[];
 }
 
+export type BookmarkHealthIssueType =
+  | "invalid_url"
+  | "unsupported_protocol"
+  | "permission_missing"
+  | "timeout"
+  | "network_error"
+  | "http_error"
+  | "login_required"
+  | "redirect";
+
+export interface BookmarkHealthIssue {
+  bookmarkId: string;
+  url: string;
+  title: string;
+  folderPath: string;
+  type: BookmarkHealthIssueType;
+  checkedAt: number;
+  httpStatus?: number;
+  finalUrl?: string;
+  error?: string;
+}
+
+export interface BookmarkHealthPreview {
+  // Health checks are read-only. Network probing is capped so users can review
+  // a useful sample without hammering every saved site at once.
+  totalBookmarksScanned: number;
+  checkedCount: number;
+  healthyCount: number;
+  issueCount: number;
+  networkPermissionGranted: boolean;
+  issues: BookmarkHealthIssue[];
+}
+
 export interface SummaryToolItem {
   bookmarkId: string;
   url: string;
@@ -233,6 +298,61 @@ export interface SummaryToolPreview {
   totalBookmarksScanned: number;
   missingSummaryCount: number;
   items: SummaryToolItem[];
+}
+
+export interface SummarySearchResultItem {
+  bookmarkId: string;
+  url: string;
+  title: string;
+  folderPath: string;
+  summary: string;
+  updatedAt: number;
+}
+
+export interface SummarySearchResult {
+  query: string;
+  totalBookmarksScanned: number;
+  matchCount: number;
+  items: SummarySearchResultItem[];
+}
+
+export interface BookmarkBackupNode {
+  // Portable bookmark-tree snapshot used for user backups. It intentionally
+  // avoids browser-internal parent references because children already encode
+  // the structure needed for inspection or future restore tooling.
+  id: string;
+  title: string;
+  type: "folder" | "bookmark";
+  url?: string;
+  dateAdded?: number;
+  dateGroupModified?: number;
+  summary?: BookmarkSummaryRecord;
+  children?: BookmarkBackupNode[];
+}
+
+export interface BookmarkBackupExport {
+  // JSON export payload returned by background and downloaded by the organizer.
+  // schemaVersion lets future import/restore features evolve this format safely.
+  schemaVersion: 1;
+  exportedAt: string;
+  source: "flowmark";
+  bookmarkCount: number;
+  folderCount: number;
+  summaryCount: number;
+  roots: BookmarkBackupNode[];
+}
+
+export type BookmarkBackupFormat = "json" | "html";
+
+export interface BookmarkBackupDownload {
+  // Download-ready backup response. Keeping the serialized content in one
+  // shape lets the UI support more export formats without knowing their internals.
+  fileName: string;
+  mimeType: string;
+  content: string;
+  format: BookmarkBackupFormat;
+  bookmarkCount: number;
+  folderCount: number;
 }
 
 export interface DuplicateBookmarkMatch {
@@ -282,6 +402,14 @@ export type OperationHistoryChange =
       summary?: BookmarkSummaryRecord;
     }
   | {
+      // Summary writes are reversible: restore the previous record, or remove
+      // the summary if Smart Organize created it from scratch.
+      type: "update_summary";
+      bookmarkId: string;
+      fromSummary: BookmarkSummaryRecord | null;
+      toSummary: BookmarkSummaryRecord;
+    }
+  | {
       type: "delete_empty_folder";
       folderId: string;
       title: string;
@@ -323,6 +451,8 @@ export interface BookmarkTreeNodeSnapshot {
   url?: string | undefined;
   children?: BookmarkTreeNodeSnapshot[] | undefined;
   parentId?: string | undefined;
+  dateAdded?: number | undefined;
+  dateGroupModified?: number | undefined;
 }
 
 export type BookmarkEvaluationState =

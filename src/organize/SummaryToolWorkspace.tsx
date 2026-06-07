@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show } from 'solid-js';
 
 import { Button } from '@/src/components/Button';
+import { RiskSummary } from '@/src/organize/RiskSummary';
 import type { WorkspaceBaseProps } from '@/src/organize/types';
 import { StatusBadge } from '@/src/components/StatusBadge';
 import { useI18n } from '@/src/shared/i18n';
@@ -11,6 +12,8 @@ type SummaryState = 'idle' | 'loading' | 'ready' | 'applying' | 'applied' | 'err
 
 export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
   const { t } = useI18n(props.locale);
+  // Summary Tools is intentionally narrow: scan for bookmarks without stored
+  // summaries, let users select a subset, then request generation in background.
   const [preview, setPreview] = createSignal<SummaryToolPreview | null>(null);
   const [state, setState] = createSignal<SummaryState>('idle');
   const [message, setMessage] = createSignal<string | null>(null);
@@ -31,6 +34,8 @@ export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
   });
 
   const loadPreview = async () => {
+    // Select missing-summary items by default because they are the primary work
+    // this tool is designed to perform.
     setState('loading');
     setMessage(null);
     try {
@@ -65,12 +70,31 @@ export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
       confirmLabel: t('confirm.generateButton'),
       cancelLabel: t('confirm.cancelButton'),
       tone: 'primary',
+      content: () => (
+        <RiskSummary
+          title={t('risk.summaryTitle')}
+          items={[
+            {
+              label: t('risk.aiSummaryRequests'),
+              value: selectedIds().length,
+              tone: 'warning',
+            },
+            {
+              label: t('risk.updateSummaries'),
+              value: selectedIds().length,
+            },
+          ]}
+          note={t('risk.summaryGenerationNote')}
+        />
+      ),
     });
     if (!confirmed) return;
 
     setState('applying');
     setMessage(null);
     try {
+      // Generation happens in the background so provider settings, URL
+      // normalization, and summary storage remain centralized.
       const result = await messaging.sendMessage('generateBookmarkSummaries', {
         bookmarkIds: selectedIds(),
       });
@@ -196,6 +220,8 @@ function SummaryItemCard(props: {
   onToggle: (checked: boolean) => void;
 }) {
   const { t } = useI18n(props.locale);
+  // A compact row for selection and review; existing summaries stay visible so
+  // users can decide whether they really need regeneration.
 
   return (
     <article class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-4">

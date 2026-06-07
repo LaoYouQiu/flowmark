@@ -15,7 +15,7 @@ import {
   saveFlowmarkSettings,
   type SettingsSaveStatus,
 } from '@/src/shared/provider-settings';
-import type { FlowmarkSettings, LocaleOverride } from '@/src/shared/types';
+import type { FlowmarkSettings, LocaleOverride, OrganizeIntensity } from '@/src/shared/types';
 
 export default function App() {
   const [settings, setLocalSettings] = createSignal<FlowmarkSettings | null>(null);
@@ -169,6 +169,35 @@ export default function App() {
                     description={t('options.summaryDescription')}
                     checked={current().summaryEnabled}
                     onInput={(checked) => update('summaryEnabled', checked)}
+                  />
+                  <OrganizeIntensityRow
+                    label={t('options.organizeIntensityLabel')}
+                    description={t('options.organizeIntensityDescription')}
+                    value={current().organizeIntensity}
+                    onInput={(value) => update('organizeIntensity', value)}
+                    options={[
+                      { value: 'conservative', label: t('options.organizeIntensityConservative') },
+                      { value: 'balanced', label: t('options.organizeIntensityBalanced') },
+                      { value: 'aggressive', label: t('options.organizeIntensityAggressive') },
+                    ]}
+                  />
+                  <NumberRow
+                    label={t('options.smartOrganizeBatchSizeLabel')}
+                    description={t('options.smartOrganizeBatchSizeDescription')}
+                    value={current().smartOrganizeBatchSize}
+                    min="1"
+                    max="20"
+                    disabled={false}
+                    onInput={(value) => update('smartOrganizeBatchSize', value)}
+                  />
+                  <NumberRow
+                    label={t('options.folderCandidateLimitLabel')}
+                    description={t('options.folderCandidateLimitDescription')}
+                    value={current().folderCandidateLimit}
+                    min="3"
+                    max="30"
+                    disabled={false}
+                    onInput={(value) => update('folderCandidateLimit', value)}
                   />
                   <ToggleRow
                     label={t('options.autoAcceptLabel')}
@@ -331,6 +360,32 @@ function SelectRow(props: {
         value={props.value}
         class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
         onInput={(event) => props.onInput(event.currentTarget.value as LocaleOverride)}
+      >
+        <For each={props.options}>{(option) => <option value={option.value}>{option.label}</option>}</For>
+      </select>
+    </div>
+  );
+}
+
+function OrganizeIntensityRow(props: {
+  label: string;
+  description: string;
+  value: OrganizeIntensity;
+  options: Array<{ value: OrganizeIntensity; label: string }>;
+  onInput: (value: OrganizeIntensity) => void;
+}) {
+  // Kept separate from Locale SelectRow so future settings selects can choose
+  // their own value types without weakening locale typing.
+  return (
+    <div class="grid grid-cols-1 gap-4 border-b border-neutral-200 py-4 sm:grid-cols-[minmax(0,1fr)_180px] sm:items-center">
+      <div class="pr-4">
+        <div class="text-sm font-medium text-neutral-900">{props.label}</div>
+        <div class="mt-1 text-sm leading-6 text-neutral-500">{props.description}</div>
+      </div>
+      <select
+        value={props.value}
+        class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
+        onInput={(event) => props.onInput(event.currentTarget.value as OrganizeIntensity)}
       >
         <For each={props.options}>{(option) => <option value={option.value}>{option.label}</option>}</For>
       </select>

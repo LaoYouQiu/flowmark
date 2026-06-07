@@ -13,6 +13,8 @@ const MAX_RECOMMENDATION_FOLDER_CANDIDATES = 12;
 const MAX_DUPLICATE_MATCHES = 3;
 
 export function buildEvaluationSignals(url: string, pageContent: PageContent): BookmarkEvaluationSignals {
+  // Convert raw page content into normalized signals that lightweight rules can
+  // inspect without re-parsing the page in every policy.
   const parsedUrl = parseUrlSafely(url);
   const normalizedText = normalizeSpace(pageContent.text ?? '').toLowerCase();
 
@@ -37,6 +39,8 @@ export function collectFolderPaths(
   tree: BookmarkTreeNodeSnapshot[],
   bookmarksBarId: string | null,
 ): string[] {
+  // Build a bounded, relative path list under the bookmarks bar. The cap keeps
+  // AI prompts and background scans from exploding on very large libraries.
   if (!bookmarksBarId) return [];
 
   const barNode = findNodeById(tree, bookmarksBarId);
@@ -94,6 +98,8 @@ export function selectFolderCandidateNodes(input: {
   currentFolderPath?: string;
   maxCandidates?: number;
 }): BookmarkFolderCandidate[] {
+  // Pick a small set of folders that look relevant to this bookmark. This is
+  // the main token-saving step: AI sees likely choices, not the full tree.
   const maxCandidates = input.maxCandidates ?? MAX_RECOMMENDATION_FOLDER_CANDIDATES;
   if (!input.bookmarksBarId || maxCandidates <= 0) return [];
 
@@ -140,6 +146,8 @@ export function selectFolderCandidateNodes(input: {
     addPath(item.path);
   }
 
+  // Include ancestors for deep candidates so the prompt still communicates the
+  // folder hierarchy instead of showing isolated leaf nodes.
   const expanded = expandWithAncestorPaths(selected.slice(0, maxCandidates), input.bookmarksBarLabel);
   const profilesByPath = new Map(profiles.map((profile) => [profile.path, profile]));
   return expanded.map((path) =>
@@ -155,6 +163,8 @@ export function detectDuplicateMatches(
   bookmarksBarLabel: string,
   untitledLabel: string,
 ): DuplicateBookmarkMatch[] {
+  // Used by the live bookmark flow to find a few closest duplicates quickly.
+  // Batch cleanup performs a full scan in its own workspace module.
   const normalizedTarget = normalizeBookmarkUrl(url);
   if (!normalizedTarget) return [];
 

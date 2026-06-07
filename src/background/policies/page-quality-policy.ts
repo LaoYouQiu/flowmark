@@ -17,6 +17,8 @@ const pageQualityRules: PageQualityRule[] = [
   lowInformationDensityRule,
 ];
 
+// Run higher-risk page types first so a login page is not hidden behind a
+// weaker "low information density" match.
 const reasonPriority: Record<BookmarkPageQualityReason, number> = {
   login_page: 0,
   search_results: 1,
@@ -29,6 +31,8 @@ export const pageQualityPolicy: BookmarkPolicy = {
     return context.settings.features.pageQuality.enabled;
   },
   async evaluate(context): Promise<PolicyResult> {
+    // This policy asks for user confirmation before AI work when the page looks
+    // unlikely to be a useful long-term bookmark.
     const matches = pageQualityRules
       .map((rule) => rule.evaluate(context))
       .filter((match): match is PageQualityRuleMatch => match != null)
@@ -77,6 +81,7 @@ export const pageQualityPolicy: BookmarkPolicy = {
         ],
       },
       continuation: {
+        // If the user chooses "continue", resume directly at recommendation.
         nextPolicyIndex: 2,
       },
     };

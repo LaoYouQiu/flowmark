@@ -11,6 +11,8 @@ export const duplicatePolicy: BookmarkPolicy = {
     return context.settings.features.duplicate.enabled;
   },
   async evaluate(context): Promise<PolicyResult> {
+    // First policy in the live flow: duplicates are cheap to detect locally and
+    // should stop the AI recommendation before spending tokens.
     const { t } = createTranslator(context.locale);
     const matches = detectDuplicateMatches(
       context.bookmarkTreeSnapshot,
@@ -67,6 +69,8 @@ export const duplicatePolicy: BookmarkPolicy = {
     };
   },
   async executeAction({ card, actionId, payload, services }) {
+    // Suppression prevents browser bookmark events triggered by our own action
+    // from immediately starting another recommendation job.
     switch (actionId) {
       case 'keep_new':
         services.store.suppress(card.bookmarkId, DUPLICATE_ACTION_SUPPRESS_TTL_MS);

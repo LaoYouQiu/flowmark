@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show } from 'solid-js';
 
 import { Button } from '@/src/components/Button';
+import { RiskSummary } from '@/src/organize/RiskSummary';
 import type { WorkspaceBaseProps } from '@/src/organize/types';
 import { StatusBadge } from '@/src/components/StatusBadge';
 import { useI18n } from '@/src/shared/i18n';
@@ -16,6 +17,8 @@ type CleanupState = 'idle' | 'loading' | 'ready' | 'applying' | 'applied' | 'err
 
 export function DuplicateCleanupWorkspace(props: WorkspaceBaseProps) {
   const { t } = useI18n(props.locale);
+  // Preview data contains the system's merge plan; local signals track the
+  // user's current keep/delete choices before sending them back to background.
   const [preview, setPreview] = createSignal<DuplicateBookmarkPreview | null>(null);
   const [state, setState] = createSignal<CleanupState>('idle');
   const [message, setMessage] = createSignal<string | null>(null);
@@ -37,6 +40,8 @@ export function DuplicateCleanupWorkspace(props: WorkspaceBaseProps) {
   });
 
   const loadPreview = async () => {
+    // Default to the background's recommended keep item and delete candidates,
+    // while still letting users override both before applying.
     setState('loading');
     setMessage(null);
     try {
@@ -68,18 +73,40 @@ export function DuplicateCleanupWorkspace(props: WorkspaceBaseProps) {
       return;
     }
 
+    const affectedGroups = () =>
+      buildMergeSelections().filter((selection) => selection.removeBookmarkIds.length > 0).length;
+
     const confirmed = await props.confirmAction?.({
       title: t('confirm.duplicatesTitle'),
       body: t('confirm.removeDuplicateBookmarks', { count: selectedIds().length }),
       confirmLabel: t('confirm.removeButton'),
       cancelLabel: t('confirm.cancelButton'),
       tone: 'danger',
+      content: () => (
+        <RiskSummary
+          title={t('risk.summaryTitle')}
+          items={[
+            {
+              label: t('risk.mergeGroups'),
+              value: affectedGroups(),
+            },
+            {
+              label: t('risk.deleteBookmarks'),
+              value: selectedIds().length,
+              tone: 'danger',
+            },
+          ]}
+          note={t('risk.backupNote')}
+        />
+      ),
     });
     if (!confirmed) return;
 
     setState('applying');
     setMessage(null);
     try {
+      // Merge selections preserve the user's keep choice so the background can
+      // transfer title/summary metadata before deleting duplicate copies.
       const result = await messaging.sendMessage('removeDuplicateBookmarks', {
         bookmarkIds: selectedIds(),
         mergeSelections: buildMergeSelections(),
@@ -112,6 +139,8 @@ export function DuplicateCleanupWorkspace(props: WorkspaceBaseProps) {
   };
 
   const setKeepBookmark = (group: DuplicateBookmarkGroup, bookmarkId: string) => {
+    // Choosing a new keep item makes every other item in the group a delete
+    // candidate, matching the mental model of "keep this one copy".
     setKeepSelections((current) => ({
       ...current,
       [group.normalizedUrl]: bookmarkId,
@@ -126,6 +155,8 @@ export function DuplicateCleanupWorkspace(props: WorkspaceBaseProps) {
   };
 
   const buildMergeSelections = (): DuplicateBookmarkMergeSelection[] => {
+    // The background receives one selection per normalized URL, not a pile of
+    // UI state. This keeps metadata merge logic close to bookmark mutations.
     return (preview()?.groups ?? []).map((group) => {
       const keepBookmarkId = keepSelections()[group.normalizedUrl] ?? group.keepBookmarkId;
       return {
@@ -250,6 +281,8 @@ function DuplicateGroupCard(props: {
   onSetKeep: (group: DuplicateBookmarkGroup, bookmarkId: string) => void;
 }) {
   const { t } = useI18n(props.locale);
+  // Recalculate the visible merge plan from the user's selected keep item so
+  // the card always describes the operation that will actually run.
   const removableItems = () => props.group.items.filter((item) => item.id !== props.keepBookmarkId);
   const selectedInGroup = () => removableItems().filter((item) => props.selectedIds.includes(item.id)).length;
   const keepItem = createMemo(() => props.group.items.find((item) => item.id === props.keepBookmarkId) ?? props.group.items[0]);
@@ -364,6 +397,8 @@ function chooseBestTitle(items: DuplicateBookmarkCandidate[]): string {
 }
 
 function scoreTitle(title: string): number {
+  // Same simple heuristic as the background preview: readable human titles win
+  // over raw URLs and very long page titles.
   const normalized = title.trim();
   if (!normalized) return 0;
   let score = 20;

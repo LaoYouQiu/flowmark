@@ -23,6 +23,8 @@ import { getBookmarksBarId, getRelativeFolderPath } from './engine/helpers';
 const MAX_DUPLICATE_GROUPS = 50;
 
 export function initDuplicateBookmarkWorkspace(): void {
+  // Workspace API used by the Duplicate Cleanup page. Preview is read-only;
+  // removal applies the user's current keep/delete selections.
   messaging.onMessage('generateDuplicateBookmarkPreview', async () => {
     return await generateDuplicateBookmarkPreview();
   });
@@ -33,6 +35,8 @@ export function initDuplicateBookmarkWorkspace(): void {
 }
 
 async function generateDuplicateBookmarkPreview(): Promise<DuplicateBookmarkPreview> {
+  // Group bookmarks by normalized URL so title differences do not hide
+  // duplicates of the same destination.
   const settings = await getResolvedSettings();
   const locale = await getCurrentLocale(settings.raw);
   const { t } = createTranslator(locale);
@@ -82,6 +86,8 @@ async function removeDuplicateBookmarks(
   bookmarkIds: string[],
   mergeSelections: DuplicateBookmarkMergeSelection[],
 ): Promise<{ removedCount: number }> {
+  // Apply non-destructive merge metadata first, then delete selected copies.
+  // Every performed change is recorded so the operation can be undone later.
   const historyChanges = await applyMergeMetadataBeforeRemoval(bookmarkIds, mergeSelections);
 
   let removedCount = 0;
@@ -118,6 +124,8 @@ async function removeDuplicateBookmarks(
 }
 
 function toDuplicateGroup(normalizedUrl: string, items: DuplicateBookmarkCandidate[]): DuplicateBookmarkGroup {
+  // The default plan keeps the best-looking candidate, suggests the best title,
+  // and marks all other copies for removal. The UI can override keepBookmarkId.
   const keepItem = chooseKeepItem(items);
   const suggestedTitle = chooseBestTitle(items);
   const removeBookmarkIds = items
@@ -159,6 +167,8 @@ function chooseKeepItem(items: DuplicateBookmarkCandidate[]): DuplicateBookmarkC
 }
 
 function scoreKeepCandidate(item: DuplicateBookmarkCandidate): number {
+  // Prefer records that preserve user-created value: saved summaries, readable
+  // titles, and less deeply nested locations.
   let score = 0;
   if (item.hasSummary) score += 30;
   score += scoreTitle(item.title);
@@ -171,6 +181,8 @@ function chooseBestTitle(items: DuplicateBookmarkCandidate[]): string {
 }
 
 function scoreTitle(title: string): number {
+  // Heuristic title quality score. It rewards human-readable titles and
+  // penalizes raw URLs or overly long page titles.
   const normalized = title.trim();
   if (!normalized) return 0;
   let score = 20;
@@ -187,6 +199,8 @@ async function applyMergeMetadataBeforeRemoval(
   bookmarkIds: string[],
   mergeSelections: DuplicateBookmarkMergeSelection[],
 ): Promise<OperationHistoryChange[]> {
+  // Before deleting duplicate copies, update the chosen keep item with the best
+  // available title and summary so useful metadata is not lost.
   const changes: OperationHistoryChange[] = [];
   const removeIds = new Set(bookmarkIds);
   if (removeIds.size === 0) return changes;
@@ -256,6 +270,8 @@ async function transferBestSummary(input: {
   suggestedTitle: string;
   normalizedUrl: string;
 }): Promise<void> {
+  // Move one useful summary from a soon-to-be-deleted duplicate onto the kept
+  // bookmark, but never overwrite an existing summary on the keep item.
   const keepSummary = await getBookmarkSummary(input.keepItem.id);
   if (keepSummary?.summary?.trim()) return;
 

@@ -2,16 +2,22 @@ import { createEffect, createMemo, createSignal, For, onMount, Show } from 'soli
 
 import { Button } from '@/src/components/Button';
 import { ConfirmDialog, type ConfirmDialogOptions } from '@/src/components/ConfirmDialog';
+import { BookmarkHealthWorkspace } from '@/src/organize/BookmarkHealthWorkspace';
 import { BookmarkOrganizerWorkspace } from '@/src/organize/BookmarkOrganizerWorkspace';
 import { DuplicateCleanupWorkspace } from '@/src/organize/DuplicateCleanupWorkspace';
 import { FolderAuditWorkspace } from '@/src/organize/FolderAuditWorkspace';
+import { SummarySearchWorkspace } from '@/src/organize/SummarySearchWorkspace';
 import { SummaryToolWorkspace } from '@/src/organize/SummaryToolWorkspace';
 import type { ConfirmActionOptions, OrganizerModuleId } from '@/src/organize/types';
 import { getBrowserUiLanguage, resolveLocale, useI18n } from '@/src/shared/i18n';
 import { messaging } from '@/src/shared/messaging';
 import { openSettingsPage } from '@/src/shared/open-settings-page';
 import { getSettings } from '@/src/shared/settings';
-import type { FlowmarkSettings, OperationHistoryEntry } from '@/src/shared/types';
+import type {
+  BookmarkBackupFormat,
+  FlowmarkSettings,
+  OperationHistoryEntry,
+} from '@/src/shared/types';
 
 type OrganizerModule = {
   id: OrganizerModuleId;
@@ -19,12 +25,16 @@ type OrganizerModule = {
     | 'organize.navSmartOrganize'
     | 'organize.navDuplicateCleanup'
     | 'organize.navFolderAudit'
-    | 'organize.navSummaryTools';
+    | 'organize.navBookmarkHealth'
+    | 'organize.navSummaryTools'
+    | 'organize.navSummarySearch';
   descriptionKey:
     | 'organize.navSmartOrganizeDesc'
     | 'organize.navDuplicateCleanupDesc'
     | 'organize.navFolderAuditDesc'
-    | 'organize.navSummaryToolsDesc';
+    | 'organize.navBookmarkHealthDesc'
+    | 'organize.navSummaryToolsDesc'
+    | 'organize.navSummarySearchDesc';
   status: 'active' | 'planned';
 };
 
@@ -48,9 +58,21 @@ const modules: OrganizerModule[] = [
     status: 'active',
   },
   {
+    id: 'bookmark-health',
+    titleKey: 'organize.navBookmarkHealth',
+    descriptionKey: 'organize.navBookmarkHealthDesc',
+    status: 'active',
+  },
+  {
     id: 'summary-tools',
     titleKey: 'organize.navSummaryTools',
     descriptionKey: 'organize.navSummaryToolsDesc',
+    status: 'active',
+  },
+  {
+    id: 'summary-search',
+    titleKey: 'organize.navSummarySearch',
+    descriptionKey: 'organize.navSummarySearchDesc',
     status: 'active',
   },
 ];
@@ -62,6 +84,8 @@ export default function App() {
   const [historyEntries, setHistoryEntries] = createSignal<OperationHistoryEntry[]>([]);
   const [historyMessage, setHistoryMessage] = createSignal<string | null>(null);
   const [undoingEntryId, setUndoingEntryId] = createSignal<string | null>(null);
+  const [backupState, setBackupState] = createSignal<'idle' | 'exporting' | 'done' | 'error'>('idle');
+  const [backupMessage, setBackupMessage] = createSignal<string | null>(null);
   const [confirmState, setConfirmState] = createSignal<{
     options: ConfirmDialogOptions;
     resolve: (confirmed: boolean) => void;
@@ -94,6 +118,35 @@ export default function App() {
 
   const openOptions = () => {
     void openSettingsPage();
+  };
+
+  const exportBackup = async (format: BookmarkBackupFormat) => {
+    // The backup is generated in background from the current browser bookmark
+    // tree, then downloaded locally from the organizer page in the chosen format.
+    setBackupState('exporting');
+    setBackupMessage(null);
+    try {
+      const result = await messaging.sendMessage('exportBookmarkBackup', { format });
+      const blob = new Blob([result.content], { type: result.mimeType });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = result.fileName;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setBackupState('done');
+      const successKey =
+        format === 'html' ? 'backup.exportHtmlSuccess' : 'backup.exportJsonSuccess';
+      setBackupMessage(t(successKey, {
+        bookmarks: result.bookmarkCount,
+        folders: result.folderCount,
+      }));
+    } catch {
+      setBackupState('error');
+      setBackupMessage(t('backup.exportFailed'));
+    }
   };
 
   const navigateModule = (moduleId: OrganizerModuleId, seed = '') => {
@@ -167,11 +220,45 @@ export default function App() {
             </div>
 
             <div class="flex flex-wrap gap-3">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => void exportBackup('json')}
+                disabled={backupState() === 'exporting'}
+              >
+                {backupState() === 'exporting'
+                  ? t('backup.exporting')
+                  : t('backup.exportJsonButton')}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => void exportBackup('html')}
+                disabled={backupState() === 'exporting'}
+              >
+                {backupState() === 'exporting'
+                  ? t('backup.exporting')
+                  : t('backup.exportHtmlButton')}
+              </Button>
               <Button type="button" variant="secondary" onClick={openOptions}>
                 {t('organize.openSettings')}
               </Button>
             </div>
           </div>
+          <Show when={backupMessage()}>
+            {(message) => (
+              <div
+                class={[
+                  'mt-4 rounded-md border px-3 py-2 text-sm leading-6',
+                  backupState() === 'error'
+                    ? 'border-red-200 bg-red-50 text-red-700'
+                    : 'border-neutral-200 bg-white text-neutral-600',
+                ].join(' ')}
+              >
+                {message()}
+              </div>
+            )}
+          </Show>
         </header>
 
         <main class="mt-5 grid gap-5 lg:grid-cols-[280px_minmax(0,1fr)]">
@@ -294,11 +381,21 @@ export default function App() {
                 onNavigate={navigateModule}
                 confirmAction={confirmAction}
               />
-            ) : (
+            ) : activeModule() === 'bookmark-health' ? (
+              <BookmarkHealthWorkspace
+                locale={locale}
+                initialQuery={filterSeed()}
+              />
+            ) : activeModule() === 'summary-tools' ? (
               <SummaryToolWorkspace
                 locale={locale}
                 initialQuery={filterSeed()}
                 confirmAction={confirmAction}
+              />
+            ) : (
+              <SummarySearchWorkspace
+                locale={locale}
+                initialQuery={filterSeed()}
               />
             )}
           </section>
@@ -320,7 +417,9 @@ function readModuleFromUrl(): OrganizerModuleId {
     value === 'smart-organize' ||
     value === 'duplicate-cleanup' ||
     value === 'folder-audit' ||
-    value === 'summary-tools'
+    value === 'bookmark-health' ||
+    value === 'summary-tools' ||
+    value === 'summary-search'
   ) {
     return value;
   }

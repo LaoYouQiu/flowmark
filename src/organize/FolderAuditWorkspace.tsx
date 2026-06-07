@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show } from 'solid-js';
 
 import { Button } from '@/src/components/Button';
+import { RiskSummary } from '@/src/organize/RiskSummary';
 import type { OrganizerModuleId, WorkspaceBaseProps } from '@/src/organize/types';
 import { StatusBadge } from '@/src/components/StatusBadge';
 import { useI18n } from '@/src/shared/i18n';
@@ -15,6 +16,8 @@ export function FolderAuditWorkspace(
   },
 ) {
   const { t } = useI18n(props.locale);
+  // Folder Audit is mostly read-only, except for similar-folder issues where
+  // users can confirm a conservative merge into the suggested target folder.
   const [preview, setPreview] = createSignal<FolderAuditPreview | null>(null);
   const [state, setState] = createSignal<AuditState>('idle');
   const [message, setMessage] = createSignal<string | null>(null);
@@ -35,6 +38,8 @@ export function FolderAuditWorkspace(
   });
 
   const loadPreview = async () => {
+    // Ask the background to scan the current bookmark tree; filtering/searching
+    // are kept local so the user can explore results without another scan.
     setState('loading');
     setMessage(null);
     try {
@@ -56,6 +61,8 @@ export function FolderAuditWorkspace(
   };
 
   const confirmNavigateToOrganizer = async () => {
+    // For issues that need manual review rather than direct mutation, seed the
+    // Smart Organize workspace with the current search query.
     const confirmed = await props.confirmAction?.({
       title: t('confirm.auditTitle'),
       body: t('confirm.openOrganizer'),
@@ -70,6 +77,8 @@ export function FolderAuditWorkspace(
   const applyFolderMerge = async (issue: FolderAuditIssue) => {
     if (issue.type !== 'similar_folder' || !issue.suggestedTargetFolderId) return;
 
+    // Similar-folder merge moves unique bookmarks, removes source duplicates,
+    // and deletes only empty folders. The confirmation text names both paths.
     const confirmed = await props.confirmAction?.({
       title: t('confirm.folderMergeTitle'),
       body: t('confirm.folderMergeBody', {
@@ -79,6 +88,28 @@ export function FolderAuditWorkspace(
       confirmLabel: t('confirm.applyButton'),
       cancelLabel: t('confirm.cancelButton'),
       tone: 'primary',
+      content: () => (
+        <RiskSummary
+          title={t('risk.summaryTitle')}
+          items={[
+            {
+              label: t('risk.moveBookmarks'),
+              value: issue.mergeBookmarkCount ?? issue.bookmarkCount,
+            },
+            {
+              label: t('risk.removeDuplicateBookmarks'),
+              value: Math.max(0, issue.bookmarkCount - (issue.mergeBookmarkCount ?? issue.bookmarkCount)),
+              tone: 'danger',
+            },
+            {
+              label: t('risk.deleteEmptyFolders'),
+              value: 1,
+              tone: 'warning',
+            },
+          ]}
+          note={t('risk.folderMergeNote')}
+        />
+      ),
     });
     if (!confirmed) return;
 
@@ -221,6 +252,8 @@ function IssueCard(props: {
   onApplyMerge: (issue: FolderAuditIssue) => void;
 }) {
   const { t } = useI18n(props.locale);
+  // One issue card handles all audit issue kinds; optional merge fields are
+  // present only for similar-folder suggestions.
 
   return (
     <article class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-4">

@@ -1,6 +1,20 @@
 import type { BookmarkSummaryRecord } from './types';
 
 const STORAGE_KEY = 'flowmark.bookmarkSummaries';
+const TRACKING_PARAM_PREFIXES = ['utm_'];
+const TRACKING_PARAM_NAMES = new Set([
+  'fbclid',
+  'gclid',
+  'gbraid',
+  'wbraid',
+  'igshid',
+  'mc_cid',
+  'mc_eid',
+  'mkt_tok',
+  'spm',
+  'ref',
+  'ref_src',
+]);
 
 type BookmarkSummaryStore = Record<string, BookmarkSummaryRecord>;
 
@@ -47,13 +61,57 @@ export function normalizeBookmarkUrl(input: string): string | null {
     url.hash = '';
     url.protocol = url.protocol.toLowerCase();
     url.hostname = url.hostname.toLowerCase();
-    if (url.pathname.length > 1) {
-      url.pathname = url.pathname.replace(/\/+$/, '');
-    }
+    url.hostname = normalizeHostname(url.hostname);
+    url.pathname = normalizePathname(url.pathname);
+    url.search = normalizeSearch(url.searchParams);
+    url.port = normalizePort(url.protocol, url.port);
     return `${url.origin}${url.pathname}${url.search}`;
   } catch {
     return null;
   }
+}
+
+function normalizeHostname(hostname: string): string {
+  // Treat common mobile subdomains as the same site to catch duplicates saved
+  // from desktop and mobile versions of the same page.
+  return hostname.replace(/^m\./, 'www.');
+}
+
+function normalizePathname(pathname: string): string {
+  const compacted = pathname.replace(/\/{2,}/g, '/');
+  return compacted.length > 1 ? compacted.replace(/\/+$/, '') : compacted;
+}
+
+function normalizeSearch(searchParams: URLSearchParams): string {
+  // Remove marketing/tracking parameters and sort the rest so equivalent query
+  // strings compare equal regardless of parameter order.
+  const kept: Array<[string, string]> = [];
+  for (const [key, value] of searchParams.entries()) {
+    const normalizedKey = key.toLowerCase();
+    if (isTrackingParam(normalizedKey)) continue;
+    kept.push([normalizedKey, value]);
+  }
+
+  kept.sort(([keyA, valueA], [keyB, valueB]) =>
+    keyA.localeCompare(keyB) || valueA.localeCompare(valueB),
+  );
+
+  const normalized = new URLSearchParams();
+  for (const [key, value] of kept) normalized.append(key, value);
+  const query = normalized.toString();
+  return query ? `?${query}` : '';
+}
+
+function isTrackingParam(key: string): boolean {
+  if (TRACKING_PARAM_NAMES.has(key)) return true;
+  return TRACKING_PARAM_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+function normalizePort(protocol: string, port: string): string {
+  if ((protocol === 'http:' && port === '80') || (protocol === 'https:' && port === '443')) {
+    return '';
+  }
+  return port;
 }
 
 async function getSummaryStore(): Promise<BookmarkSummaryStore> {

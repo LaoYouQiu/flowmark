@@ -19,6 +19,8 @@ const DEEP_FOLDER_MIN_DEPTH = 4;
 const MIN_SIMILAR_FOLDER_PARTS = 2;
 
 export function initFolderAuditWorkspace(): void {
+  // Workspace API for structural folder checks. Generating the preview is safe;
+  // applying a similar-folder merge mutates bookmarks and writes undo history.
   messaging.onMessage('generateFolderAuditPreview', async () => {
     return await generateFolderAuditPreview();
   });
@@ -29,6 +31,8 @@ export function initFolderAuditWorkspace(): void {
 }
 
 async function generateFolderAuditPreview(): Promise<FolderAuditPreview> {
+  // Combine simple structural checks with semantic similar-folder detection,
+  // then trim to a manageable list for the organize page.
   const settings = await getResolvedSettings();
   const locale = await getCurrentLocale(settings.raw);
   const { t } = createTranslator(locale);
@@ -91,6 +95,8 @@ function detectSimilarFolderIssues(
   bookmarksBarId: string | null,
   bookmarksBarLabel: string,
 ): FolderAuditIssue[] {
+  // Similar folders are detected by comparing normalized path tokens, so
+  // "tools-ai", "tools / ai", and "ai-tools" can land in the same group.
   if (!bookmarksBarId) return [];
 
   const folders = flattenFolderNodes(tree)
@@ -153,6 +159,8 @@ async function applyFolderMergeIssue(
   sourceFolderId: string,
   targetFolderId: string,
 ): Promise<ApplyFolderMergeIssueResult> {
+  // Merge conservatively: move unique source bookmarks, delete source-side
+  // duplicates already present in the target, then remove only empty folders.
   if (sourceFolderId === targetFolderId) {
     return { movedCount: 0, removedDuplicateCount: 0, deletedFolderCount: 0 };
   }
@@ -235,6 +243,8 @@ function resolveIssueType(
   subfolderCount: number,
   depth: number,
 ): FolderAuditIssue['type'] | null {
+  // Basic folder health signals. Similar-folder issues are handled separately
+  // because they need a whole-tree comparison.
   if (bookmarkCount === 0 && subfolderCount === 0) return 'empty_folder';
   if (depth >= DEEP_FOLDER_MIN_DEPTH) return 'deep_folder';
   if (bookmarkCount <= SPARSE_FOLDER_MAX_BOOKMARKS && subfolderCount === 0) return 'sparse_folder';
@@ -350,6 +360,8 @@ async function removeEmptyFolderTree(
   folderId: string,
   historyChanges: OperationHistoryChange[],
 ): Promise<number> {
+  // Delete bottom-up and repeat until no empty descendants remain. Parent
+  // folders with any remaining content are intentionally left in place.
   let deletedCount = 0;
   let changed = true;
 
@@ -392,6 +404,8 @@ async function collectFolderDescendantsPostOrder(folderId: string): Promise<Arra
 }
 
 function getSemanticPathParts(path: string): string[] {
+  // Turn a display path into comparable semantic tokens. Order is discarded
+  // later, which lets "ai-tools" match "tools/ai".
   return path
     .replace(/人工智能/gi, ' ai ')
     .replace(/([a-z0-9])([\u4e00-\u9fff])/gi, '$1 $2')
