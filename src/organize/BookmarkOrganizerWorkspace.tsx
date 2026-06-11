@@ -1,6 +1,8 @@
 import { createMemo, createSignal, For, Show } from 'solid-js';
 
 import { Button } from '@/src/components/Button';
+import { ControlField } from '@/src/organize/ControlField';
+import { DisclosurePanel } from '@/src/organize/DisclosurePanel';
 import { RiskSummary, type RiskSummaryItem } from '@/src/organize/RiskSummary';
 import type { WorkspaceBaseProps } from '@/src/organize/types';
 import { StatusBadge } from '@/src/components/StatusBadge';
@@ -15,7 +17,16 @@ import type {
   SmartOrganizeJobSnapshot,
 } from '@/src/shared/types';
 
-type BatchState = 'idle' | 'loading' | 'batching' | 'ready' | 'applying' | 'applied' | 'error';
+type BatchState =
+  | 'idle'
+  | 'loading'
+  | 'batching'
+  | 'cancelling'
+  | 'cancelled'
+  | 'ready'
+  | 'applying'
+  | 'applied'
+  | 'error';
 
 export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
   const { t } = useI18n(props.locale);
@@ -27,6 +38,7 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
   const [jobSnapshot, setJobSnapshot] = createSignal<SmartOrganizeJobSnapshot | null>(null);
   const [selectedIds, setSelectedIds] = createSignal<string[]>([]);
   const [query, setQuery] = createSignal(props.initialQuery ?? '');
+  const [stopRequested, setStopRequested] = createSignal(false);
   const [applyActions, setApplyActions] = createSignal<ExistingBookmarkApplyActions>({
     moveToFolder: true,
     renameTitle: true,
@@ -52,6 +64,7 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
     setBatchState('loading');
     setBatchMessage(null);
     setJobSnapshot(null);
+    setStopRequested(false);
     try {
       // Batch size is controlled by settings; an empty payload lets background
       // apply the latest saved budget preference.
@@ -77,7 +90,7 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
     }
 
     setBatchState('batching');
-    while (current.status === 'running') {
+    while (current.status === 'running' && !stopRequested()) {
       setBatchMessage(t('organize.batchProgress', {
         scanned: current.scanned,
         total: current.total,
@@ -93,6 +106,11 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
           .filter((id) => !selected.includes(id)),
       ]);
       await new Promise((resolve) => window.setTimeout(resolve, 120));
+    }
+
+    if (current.status === 'cancelled' || stopRequested()) {
+      finishCancelledPreview(current);
+      return;
     }
 
     if (current.status === 'completed') {
@@ -116,6 +134,34 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
           })
         : t('organize.previewEmpty'),
     );
+  };
+
+  const finishCancelledPreview = (job: SmartOrganizeJobSnapshot) => {
+    const preview = toPreview(job);
+    setBatchPreview(preview);
+    setBatchState('cancelled');
+    setBatchMessage(t('organize.scanCancelled', {
+      scanned: job.scanned,
+      total: job.total,
+      count: preview.suggestionCount,
+    }));
+  };
+
+  const stopScan = async () => {
+    const job = jobSnapshot();
+    if (!job || (job.status !== 'running' && batchState() !== 'batching')) return;
+
+    setStopRequested(true);
+    setBatchState('cancelling');
+    setBatchMessage(t('organize.cancellingScan'));
+    try {
+      const cancelled = await messaging.sendMessage('cancelSmartOrganizeJob', { jobId: job.id });
+      setJobSnapshot(cancelled);
+      finishCancelledPreview(cancelled);
+    } catch {
+      setBatchState('error');
+      setBatchMessage(t('organize.cancelFailed'));
+    }
   };
 
   const toPreview = (job: SmartOrganizeJobSnapshot): ExistingBookmarkSuggestionPreview => ({
@@ -288,6 +334,10 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
               ? t('common.loading')
               : batchState() === 'batching'
                 ? t('organize.batching')
+              : batchState() === 'cancelling'
+                ? t('organize.cancelling')
+              : batchState() === 'cancelled'
+                ? t('organize.cancelled')
               : batchState() === 'applying'
                 ? t('organize.applying')
                 : batchState() === 'applied'
@@ -300,7 +350,7 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
           <p class="text-sm leading-6 text-neutral-600">
             {batchMessage() ?? t('organize.hint')}
           </p>
-          <Show when={batchState() === 'batching' ? jobSnapshot() : null}>
+          <Show when={batchState() === 'batching' || batchState() === 'cancelling' ? jobSnapshot() : null}>
             {(job) => (
               <div class="mt-3 h-2 overflow-hidden rounded-full bg-neutral-200">
                 <div
@@ -320,11 +370,28 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
           >
             {t('organize.scanButton')}
           </Button>
+          <Show when={batchState() === 'batching' || batchState() === 'cancelling'}>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => void stopScan()}
+              disabled={batchState() === 'cancelling'}
+            >
+              {batchState() === 'cancelling'
+                ? t('organize.stoppingScanButton')
+                : t('organize.stopScanButton')}
+            </Button>
+          </Show>
           <Show when={batchPreview()?.suggestions.length}>
             <Button
               type="button"
               onClick={() => void applySelected(false)}
-              disabled={batchState() === 'applying'}
+              disabled={
+                batchState() === 'loading' ||
+                batchState() === 'batching' ||
+                batchState() === 'cancelling' ||
+                batchState() === 'applying'
+              }
             >
               {t('organize.applySelectedButton', { count: selectedCount() })}
             </Button>
@@ -332,7 +399,12 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
               type="button"
               variant="secondary"
               onClick={() => void applySelected(true)}
-              disabled={batchState() === 'applying'}
+              disabled={
+                batchState() === 'loading' ||
+                batchState() === 'batching' ||
+                batchState() === 'cancelling' ||
+                batchState() === 'applying'
+              }
             >
               {t('organize.applyAllButton')}
             </Button>
@@ -341,13 +413,18 @@ export function BookmarkOrganizerWorkspace(props: WorkspaceBaseProps) {
 
         <Show when={batchPreview()?.suggestions.length}>
           <div class="mt-5">
-            <input
-              type="search"
-              value={query()}
-              placeholder={t('organize.searchPlaceholder')}
-              class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
-              onInput={(event) => setQuery(event.currentTarget.value)}
-            />
+            <ControlField
+              label={t('organize.searchLabel')}
+              description={t('organize.searchHelp')}
+            >
+              <input
+                type="search"
+                value={query()}
+                placeholder={t('organize.searchPlaceholder')}
+                class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
+                onInput={(event) => setQuery(event.currentTarget.value)}
+              />
+            </ControlField>
           </div>
         </Show>
       </section>
@@ -515,24 +592,34 @@ function SuggestionCard(props: {
           {t('organize.suggestedTitle')}
         </div>
         <div class="mt-2 text-sm text-neutral-900">{props.item.suggestedTitle}</div>
-        <Show when={props.item.summary}>
-          <p class="mt-3 text-sm leading-6 text-neutral-500">{props.item.summary}</p>
-        </Show>
       </div>
 
-      <div class="mt-3 rounded-md border border-neutral-200 bg-white px-3 py-3">
-        <div class="text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-400">
-          {t('organize.reasonTitle')}
-        </div>
-        <p class="mt-2 text-sm leading-6 text-neutral-600">
-          {reasonText(props.item.reason, props.locale)}
-        </p>
-      </div>
-
-      <div class="mt-3 flex flex-wrap gap-2">
-        {props.item.actions.map((action) => (
-          <ActionBadge action={action} locale={props.locale} />
-        ))}
+      <div class="mt-3">
+        <DisclosurePanel
+          title={t('organize.detailTitle')}
+          summary={reasonText(props.item.reason, props.locale)}
+          showLabel={t('common.showDetails')}
+          hideLabel={t('common.hideDetails')}
+        >
+          <div class="space-y-3">
+            <Show when={props.item.summary}>
+              <p class="text-sm leading-6 text-neutral-600">{props.item.summary}</p>
+            </Show>
+            <div>
+              <div class="text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-400">
+                {t('organize.reasonTitle')}
+              </div>
+              <p class="mt-2 text-sm leading-6 text-neutral-600">
+                {reasonText(props.item.reason, props.locale)}
+              </p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              {props.item.actions.map((action) => (
+                <ActionBadge action={action} locale={props.locale} />
+              ))}
+            </div>
+          </div>
+        </DisclosurePanel>
       </div>
     </article>
   );

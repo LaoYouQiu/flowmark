@@ -11,7 +11,7 @@ import type {
 import { getBookmarksBarId, getRelativeFolderPath } from './engine/helpers';
 
 const DEFAULT_HEALTH_CHECK_LIMIT = 80;
-const MAX_HEALTH_CHECK_LIMIT = 200;
+const MAX_HEALTH_CHECK_LIMIT = 1000;
 const HEALTH_CHECK_TIMEOUT_MS = 8000;
 const NETWORK_PERMISSION_ORIGINS = ['http://*/*', 'https://*/*'];
 

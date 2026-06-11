@@ -1,6 +1,8 @@
 import { createMemo, createSignal, For, Show } from 'solid-js';
 
 import { Button } from '@/src/components/Button';
+import { ControlField } from '@/src/organize/ControlField';
+import { DisclosurePanel } from '@/src/organize/DisclosurePanel';
 import { RiskSummary } from '@/src/organize/RiskSummary';
 import type { WorkspaceBaseProps } from '@/src/organize/types';
 import { StatusBadge } from '@/src/components/StatusBadge';
@@ -11,9 +13,19 @@ import type {
   DuplicateBookmarkGroup,
   DuplicateBookmarkMergeSelection,
   DuplicateBookmarkPreview,
+  DuplicateBookmarkScanJobSnapshot,
 } from '@/src/shared/types';
 
-type CleanupState = 'idle' | 'loading' | 'ready' | 'applying' | 'applied' | 'error';
+type CleanupState =
+  | 'idle'
+  | 'loading'
+  | 'scanning'
+  | 'cancelling'
+  | 'cancelled'
+  | 'ready'
+  | 'applying'
+  | 'applied'
+  | 'error';
 
 export function DuplicateCleanupWorkspace(props: WorkspaceBaseProps) {
   const { t } = useI18n(props.locale);
@@ -22,6 +34,8 @@ export function DuplicateCleanupWorkspace(props: WorkspaceBaseProps) {
   const [preview, setPreview] = createSignal<DuplicateBookmarkPreview | null>(null);
   const [state, setState] = createSignal<CleanupState>('idle');
   const [message, setMessage] = createSignal<string | null>(null);
+  const [jobSnapshot, setJobSnapshot] = createSignal<DuplicateBookmarkScanJobSnapshot | null>(null);
+  const [stopRequested, setStopRequested] = createSignal(false);
   const [selectedIds, setSelectedIds] = createSignal<string[]>([]);
   const [keepSelections, setKeepSelections] = createSignal<Record<string, string>>({});
   const [query, setQuery] = createSignal(props.initialQuery ?? '');
@@ -44,25 +58,101 @@ export function DuplicateCleanupWorkspace(props: WorkspaceBaseProps) {
     // while still letting users override both before applying.
     setState('loading');
     setMessage(null);
+    setJobSnapshot(null);
+    setStopRequested(false);
     try {
-      const next = await messaging.sendMessage('generateDuplicateBookmarkPreview');
-      setPreview(next);
-      setKeepSelections(Object.fromEntries(next.groups.map((group) => [group.normalizedUrl, group.keepBookmarkId])));
-      setSelectedIds(
-        next.groups.flatMap((group) => group.removeBookmarkIds),
-      );
-      setState('ready');
-      setMessage(
-        next.duplicateGroupCount > 0
-          ? t('duplicates.previewReady', {
-              groups: next.duplicateGroupCount,
-              total: next.totalBookmarksScanned,
-            })
-          : t('duplicates.previewEmpty'),
-      );
+      const job = await messaging.sendMessage('startDuplicateBookmarkScanJob');
+      await consumeDuplicateScanJob(job);
     } catch {
       setState('error');
       setMessage(t('duplicates.previewFailed'));
+    }
+  };
+
+  const consumeDuplicateScanJob = async (initialJob: DuplicateBookmarkScanJobSnapshot) => {
+    let current = initialJob;
+    setJobSnapshot(current);
+    updatePreviewFromJob(current);
+    setState('scanning');
+
+    while (current.status === 'running' && !stopRequested()) {
+      setMessage(t('duplicates.scanProgress', {
+        scanned: current.scanned,
+        total: current.totalBookmarksScanned,
+        groups: current.duplicateGroupCount,
+      }));
+      current = await messaging.sendMessage('runDuplicateBookmarkScanJobBatch', { jobId: current.id });
+      setJobSnapshot(current);
+      updatePreviewFromJob(current);
+      await new Promise((resolve) => window.setTimeout(resolve, 80));
+    }
+
+    if (current.status === 'cancelled' || stopRequested()) {
+      finishCancelledPreview(current);
+      return;
+    }
+
+    if (current.status === 'completed') {
+      finishPreview(current);
+      return;
+    }
+
+    setState('error');
+    setMessage(current.error ?? t('duplicates.previewFailed'));
+  };
+
+  const updatePreviewFromJob = (job: DuplicateBookmarkScanJobSnapshot) => {
+    const next = toPreview(job);
+    setPreview(next);
+    setKeepSelections(Object.fromEntries(next.groups.map((group) => [group.normalizedUrl, group.keepBookmarkId])));
+    setSelectedIds(next.groups.flatMap((group) => group.removeBookmarkIds));
+  };
+
+  const finishPreview = (job: DuplicateBookmarkScanJobSnapshot) => {
+    const next = toPreview(job);
+    setPreview(next);
+    setState('ready');
+    setMessage(
+      next.duplicateGroupCount > 0
+        ? t('duplicates.previewReady', {
+            groups: next.duplicateGroupCount,
+            total: next.totalBookmarksScanned,
+          })
+        : t('duplicates.previewEmpty'),
+    );
+  };
+
+  const finishCancelledPreview = (job: DuplicateBookmarkScanJobSnapshot) => {
+    const next = toPreview(job);
+    setPreview(next);
+    setState('cancelled');
+    setMessage(t('duplicates.scanCancelled', {
+      scanned: job.scanned,
+      total: job.totalBookmarksScanned,
+      groups: next.duplicateGroupCount,
+    }));
+  };
+
+  const toPreview = (job: DuplicateBookmarkScanJobSnapshot): DuplicateBookmarkPreview => ({
+    totalBookmarksScanned: job.totalBookmarksScanned,
+    duplicateGroupCount: job.duplicateGroupCount,
+    groups: job.groups,
+  });
+
+  const stopScan = async () => {
+    const job = jobSnapshot();
+    if (!job || (job.status !== 'running' && state() !== 'scanning')) return;
+
+    setStopRequested(true);
+    setState('cancelling');
+    setMessage(t('duplicates.cancellingScan'));
+    try {
+      const cancelled = await messaging.sendMessage('cancelDuplicateBookmarkScanJob', { jobId: job.id });
+      setJobSnapshot(cancelled);
+      finishCancelledPreview(cancelled);
+    } catch {
+      setState('error');
+      setMessage(t('duplicates.cancelFailed'));
     }
   };
 
@@ -195,6 +285,12 @@ export function DuplicateCleanupWorkspace(props: WorkspaceBaseProps) {
           >
             {state() === 'loading'
               ? t('common.loading')
+              : state() === 'scanning'
+                ? t('duplicates.scanning')
+              : state() === 'cancelling'
+                ? t('duplicates.cancelling')
+              : state() === 'cancelled'
+                ? t('duplicates.cancelled')
               : state() === 'applying'
                 ? t('duplicates.applying')
                 : state() === 'applied'
@@ -207,21 +303,47 @@ export function DuplicateCleanupWorkspace(props: WorkspaceBaseProps) {
           <p class="text-sm leading-6 text-neutral-600">
             {message() ?? t('duplicates.hint')}
           </p>
+          <Show when={state() === 'scanning' || state() === 'cancelling' ? jobSnapshot() : null}>
+            {(job) => (
+              <div class="mt-3 h-2 overflow-hidden rounded-full bg-neutral-200">
+                <div
+                  class="h-full rounded-full bg-neutral-900 transition-all"
+                  style={{
+                    width: `${job().totalBookmarksScanned > 0
+                      ? Math.round((job().scanned / job().totalBookmarksScanned) * 100)
+                      : 0}%`,
+                  }}
+                />
+              </div>
+            )}
+          </Show>
         </div>
 
         <div class="mt-5 flex flex-wrap gap-3">
           <Button
             type="button"
             onClick={loadPreview}
-            disabled={state() === 'loading' || state() === 'applying'}
+            disabled={state() === 'loading' || state() === 'scanning' || state() === 'cancelling' || state() === 'applying'}
           >
             {t('duplicates.scanButton')}
           </Button>
+          <Show when={state() === 'scanning' || state() === 'cancelling'}>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => void stopScan()}
+              disabled={state() === 'cancelling'}
+            >
+              {state() === 'cancelling'
+                ? t('duplicates.stoppingScanButton')
+                : t('duplicates.stopScanButton')}
+            </Button>
+          </Show>
           <Show when={preview()?.duplicateGroupCount}>
             <Button
               type="button"
               onClick={() => void applyRemoval()}
-              disabled={state() === 'loading' || state() === 'applying'}
+              disabled={state() === 'loading' || state() === 'scanning' || state() === 'cancelling' || state() === 'applying'}
             >
               {t('duplicates.removeSelectedButton', { count: selectedCount() })}
             </Button>
@@ -230,13 +352,18 @@ export function DuplicateCleanupWorkspace(props: WorkspaceBaseProps) {
 
         <Show when={preview()?.duplicateGroupCount}>
           <div class="mt-5">
-            <input
-              type="search"
-              value={query()}
-              placeholder={t('duplicates.searchPlaceholder')}
-              class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
-              onInput={(event) => setQuery(event.currentTarget.value)}
-            />
+            <ControlField
+              label={t('duplicates.searchLabel')}
+              description={t('duplicates.searchHelp')}
+            >
+              <input
+                type="search"
+                value={query()}
+                placeholder={t('duplicates.searchPlaceholder')}
+                class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
+                onInput={(event) => setQuery(event.currentTarget.value)}
+              />
+            </ControlField>
           </div>
         </Show>
       </section>
@@ -287,6 +414,9 @@ function DuplicateGroupCard(props: {
   const selectedInGroup = () => removableItems().filter((item) => props.selectedIds.includes(item.id)).length;
   const keepItem = createMemo(() => props.group.items.find((item) => item.id === props.keepBookmarkId) ?? props.group.items[0]);
   const suggestedTitle = createMemo(() => chooseBestTitle(props.group.items));
+  const groupReason = createMemo(() =>
+    t('duplicates.groupReason', { url: props.group.normalizedUrl }),
+  );
 
   return (
     <article class="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-4">
@@ -297,6 +427,9 @@ function DuplicateGroupCard(props: {
           </div>
           <div class="mt-1 text-xs text-neutral-500">
             {t('duplicates.groupSize', { count: props.group.items.length })}
+          </div>
+          <div class="mt-2 text-xs leading-5 text-neutral-500">
+            {groupReason()}
           </div>
         </div>
         <label class="inline-flex items-center gap-2 rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700">
@@ -310,41 +443,48 @@ function DuplicateGroupCard(props: {
         </label>
       </div>
 
-      <div class="mt-4 rounded-md border border-neutral-200 bg-white px-3 py-3">
-        <div class="text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-400">
-          {t('duplicates.mergePlan')}
-        </div>
-        <div class="mt-2 grid gap-3 sm:grid-cols-2">
-          <div>
-            <div class="text-xs text-neutral-400">{t('duplicates.keepBookmark')}</div>
-            <div class="mt-1 truncate text-sm font-medium text-neutral-900" title={keepItem()?.folderPath}>
-              {keepItem()?.folderPath}
+      <div class="mt-4">
+        <DisclosurePanel
+          title={t('duplicates.mergePlan')}
+          summary={t('duplicates.mergePlanSummary', { count: removableItems().length })}
+          showLabel={t('common.showDetails')}
+          hideLabel={t('common.hideDetails')}
+        >
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div>
+              <div class="text-xs text-neutral-400">{t('duplicates.keepBookmark')}</div>
+              <div class="mt-1 truncate text-sm font-medium text-neutral-900" title={keepItem()?.folderPath}>
+                {keepItem()?.folderPath}
+              </div>
+            </div>
+            <div>
+              <div class="text-xs text-neutral-400">{t('duplicates.suggestedTitle')}</div>
+              <div class="mt-1 truncate text-sm font-medium text-neutral-900" title={suggestedTitle()}>
+                {suggestedTitle()}
+              </div>
             </div>
           </div>
-          <div>
-            <div class="text-xs text-neutral-400">{t('duplicates.suggestedTitle')}</div>
-            <div class="mt-1 truncate text-sm font-medium text-neutral-900" title={suggestedTitle()}>
-              {suggestedTitle()}
-            </div>
+          <div class="mt-3 flex flex-wrap gap-2">
+            {props.group.actions.map((action) => (
+              <span class="rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs text-neutral-600">
+                {action.type === 'rename'
+                  ? t('duplicates.actionRename')
+                  : action.type === 'merge_summary'
+                    ? t('duplicates.actionMergeSummary')
+                    : t('duplicates.actionDelete')}
+              </span>
+            ))}
           </div>
-        </div>
-        <div class="mt-3 flex flex-wrap gap-2">
-          {props.group.actions.map((action) => (
-            <span class="rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs text-neutral-600">
-              {action.type === 'rename'
-                ? t('duplicates.actionRename')
-                : action.type === 'merge_summary'
-                  ? t('duplicates.actionMergeSummary')
-                  : t('duplicates.actionDelete')}
-            </span>
-          ))}
-        </div>
+        </DisclosurePanel>
       </div>
 
       <div class="mt-4 space-y-3">
         <For each={props.group.items}>
           {(item) => {
             const isPrimary = item.id === props.keepBookmarkId;
+            const removeReasons = createMemo(() =>
+              getDuplicateRemovalReasons(item, keepItem(), suggestedTitle(), t),
+            );
             return (
               <div class="rounded-md border border-neutral-200 bg-white px-3 py-3">
                 <div class="flex flex-wrap items-start justify-between gap-3">
@@ -357,6 +497,22 @@ function DuplicateGroupCard(props: {
                     </div>
                     <Show when={item.hasSummary}>
                       <div class="mt-2 text-xs text-neutral-400">{t('duplicates.hasSummary')}</div>
+                    </Show>
+                    <Show when={!isPrimary}>
+                      <div class="mt-3">
+                        <DisclosurePanel
+                          title={t('duplicates.removalReasonTitle')}
+                          summary={removeReasons()[0]}
+                          showLabel={t('common.showDetails')}
+                          hideLabel={t('common.hideDetails')}
+                        >
+                          <ul class="list-disc space-y-1 pl-4 text-xs leading-5 text-neutral-700">
+                            <For each={removeReasons()}>
+                              {(reason) => <li>{reason}</li>}
+                            </For>
+                          </ul>
+                        </DisclosurePanel>
+                      </div>
                     </Show>
                   </div>
 
@@ -390,6 +546,34 @@ function DuplicateGroupCard(props: {
       </div>
     </article>
   );
+}
+
+function getDuplicateRemovalReasons(
+  item: DuplicateBookmarkCandidate,
+  keepItem: DuplicateBookmarkCandidate | undefined,
+  suggestedTitle: string,
+  t: ReturnType<typeof useI18n>['t'],
+): string[] {
+  const reasons = [t('duplicates.reasonSameUrl')];
+  if (!keepItem) return reasons;
+
+  if (keepItem.hasSummary && !item.hasSummary) {
+    reasons.push(t('duplicates.reasonKeepHasSummary'));
+  }
+
+  if (scoreTitle(keepItem.title) > scoreTitle(item.title)) {
+    reasons.push(t('duplicates.reasonKeepTitleBetter'));
+  }
+
+  if (suggestedTitle && suggestedTitle !== item.title) {
+    reasons.push(t('duplicates.reasonTitlePreserved'));
+  }
+
+  if (keepItem.folderPath !== item.folderPath) {
+    reasons.push(t('duplicates.reasonKeepFolder', { folder: keepItem.folderPath }));
+  }
+
+  return [...new Set(reasons)];
 }
 
 function chooseBestTitle(items: DuplicateBookmarkCandidate[]): string {

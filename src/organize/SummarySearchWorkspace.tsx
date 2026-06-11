@@ -2,12 +2,14 @@ import { createMemo, createSignal, For, Show } from 'solid-js';
 
 import { Button } from '@/src/components/Button';
 import { StatusBadge } from '@/src/components/StatusBadge';
+import { ControlField } from '@/src/organize/ControlField';
+import { ProgressBar } from '@/src/organize/ProgressBar';
 import type { WorkspaceBaseProps } from '@/src/organize/types';
 import { useI18n } from '@/src/shared/i18n';
 import { messaging } from '@/src/shared/messaging';
 import type { SummarySearchResult, SummarySearchResultItem } from '@/src/shared/types';
 
-type SearchState = 'idle' | 'loading' | 'ready' | 'error';
+type SearchState = 'idle' | 'loading' | 'cancelled' | 'ready' | 'error';
 
 export function SummarySearchWorkspace(props: WorkspaceBaseProps) {
   const { t } = useI18n(props.locale);
@@ -16,6 +18,7 @@ export function SummarySearchWorkspace(props: WorkspaceBaseProps) {
   const [result, setResult] = createSignal<SummarySearchResult | null>(null);
   const [state, setState] = createSignal<SearchState>('idle');
   const [message, setMessage] = createSignal<string | null>(null);
+  const [searchToken, setSearchToken] = createSignal(0);
   const [query, setQuery] = createSignal(props.initialQuery ?? '');
 
   const hasQuery = createMemo(() => query().trim().length > 0);
@@ -28,12 +31,15 @@ export function SummarySearchWorkspace(props: WorkspaceBaseProps) {
       return;
     }
 
+    const token = searchToken() + 1;
+    setSearchToken(token);
     setState('loading');
-    setMessage(null);
+    setMessage(t('summarySearch.searching'));
     try {
       const next = await messaging.sendMessage('searchBookmarkSummaries', {
         query: query().trim(),
       });
+      if (searchToken() !== token) return;
       setResult(next);
       setState('ready');
       setMessage(
@@ -45,9 +51,16 @@ export function SummarySearchWorkspace(props: WorkspaceBaseProps) {
           : t('summarySearch.noResults'),
       );
     } catch {
+      if (searchToken() !== token) return;
       setState('error');
       setMessage(t('summarySearch.failed'));
     }
+  };
+
+  const stopSearch = () => {
+    setSearchToken((token) => token + 1);
+    setState('cancelled');
+    setMessage(t('summarySearch.cancelled'));
   };
 
   return (
@@ -68,36 +81,59 @@ export function SummarySearchWorkspace(props: WorkspaceBaseProps) {
           <StatusBadge tone={state() === 'error' ? 'warning' : state() === 'ready' ? 'ready' : 'neutral'}>
             {state() === 'loading'
               ? t('common.loading')
+              : state() === 'cancelled'
+                ? t('summarySearch.cancelledBadge')
               : state() === 'ready'
                 ? t('summarySearch.ready')
                 : t('summarySearch.pending')}
           </StatusBadge>
         </div>
 
-        <div class="mt-5 flex flex-col gap-3 sm:flex-row">
-          <input
-            type="search"
-            value={query()}
-            placeholder={t('summarySearch.searchPlaceholder')}
-            class="min-w-0 flex-1 rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-400"
-            onInput={(event) => setQuery(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') void runSearch();
-            }}
-          />
+        <div class="mt-5 flex flex-col items-start gap-3 sm:flex-row">
+          <div class="min-w-0 flex-1 self-stretch">
+            <ControlField
+              label={t('summarySearch.searchLabel')}
+              description={t('summarySearch.searchHelp')}
+            >
+              <input
+                type="search"
+                value={query()}
+                placeholder={t('summarySearch.searchPlaceholder')}
+                class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-400"
+                onInput={(event) => setQuery(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') void runSearch();
+                }}
+              />
+            </ControlField>
+          </div>
           <Button
             type="button"
+            class="mt-0 sm:mt-7"
             onClick={() => void runSearch()}
             disabled={state() === 'loading'}
           >
             {t('summarySearch.searchButton')}
           </Button>
+          <Show when={state() === 'loading'}>
+            <Button
+              type="button"
+              variant="secondary"
+              class="mt-0 sm:mt-7"
+              onClick={stopSearch}
+            >
+              {t('summarySearch.stopButton')}
+            </Button>
+          </Show>
         </div>
 
         <Show when={message()}>
           {(text) => (
             <div class="mt-4 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm leading-6 text-neutral-600">
               {text()}
+              <Show when={state() === 'loading'}>
+                <ProgressBar active />
+              </Show>
             </div>
           )}
         </Show>

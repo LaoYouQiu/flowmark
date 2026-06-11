@@ -32,7 +32,7 @@ export const DEFAULT_SETTINGS: FlowmarkSettings = {
   sendPageText: false,
   maxPageChars: 5000,
   organizeIntensity: "balanced",
-  smartOrganizeBatchSize: 5,
+  smartOrganizeBatchSize: 20,
   folderCandidateLimit: 12,
   aiBaseURL: "",
   aiApiKey: "",
@@ -211,6 +211,13 @@ export interface DuplicateBookmarkPreview {
   groups: DuplicateBookmarkGroup[];
 }
 
+export interface DuplicateBookmarkScanJobSnapshot extends DuplicateBookmarkPreview {
+  id: string;
+  status: "running" | "completed" | "cancelled" | "failed";
+  scanned: number;
+  error?: string;
+}
+
 export interface DuplicateBookmarkMergeSelection {
   normalizedUrl: string;
   keepBookmarkId: string;
@@ -353,6 +360,13 @@ export interface BookmarkBackupDownload {
   format: BookmarkBackupFormat;
   bookmarkCount: number;
   folderCount: number;
+}
+
+export interface DebugBookmarkSeedResult {
+  requestedCount: number;
+  createdCount: number;
+  rootFolderId: string;
+  rootFolderTitle: string;
 }
 
 export interface DuplicateBookmarkMatch {

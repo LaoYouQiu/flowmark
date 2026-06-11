@@ -1,6 +1,8 @@
 import { createMemo, createSignal, For, Show } from 'solid-js';
 
 import { Button } from '@/src/components/Button';
+import { ControlField } from '@/src/organize/ControlField';
+import { ProgressBar } from '@/src/organize/ProgressBar';
 import { RiskSummary } from '@/src/organize/RiskSummary';
 import type { WorkspaceBaseProps } from '@/src/organize/types';
 import { StatusBadge } from '@/src/components/StatusBadge';
@@ -8,7 +10,7 @@ import { useI18n } from '@/src/shared/i18n';
 import { messaging } from '@/src/shared/messaging';
 import type { SummaryToolItem, SummaryToolPreview } from '@/src/shared/types';
 
-type SummaryState = 'idle' | 'loading' | 'ready' | 'applying' | 'applied' | 'error';
+type SummaryState = 'idle' | 'loading' | 'cancelled' | 'ready' | 'applying' | 'applied' | 'error';
 
 export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
   const { t } = useI18n(props.locale);
@@ -17,6 +19,7 @@ export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
   const [preview, setPreview] = createSignal<SummaryToolPreview | null>(null);
   const [state, setState] = createSignal<SummaryState>('idle');
   const [message, setMessage] = createSignal<string | null>(null);
+  const [taskToken, setTaskToken] = createSignal(0);
   const [selectedIds, setSelectedIds] = createSignal<string[]>([]);
   const [query, setQuery] = createSignal(props.initialQuery ?? '');
 
@@ -36,10 +39,13 @@ export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
   const loadPreview = async () => {
     // Select missing-summary items by default because they are the primary work
     // this tool is designed to perform.
+    const token = taskToken() + 1;
+    setTaskToken(token);
     setState('loading');
-    setMessage(null);
+    setMessage(t('summary.scanProgress'));
     try {
       const next = await messaging.sendMessage('generateSummaryToolPreview');
+      if (taskToken() !== token) return;
       setPreview(next);
       setSelectedIds(
         next.items.filter((item) => !item.hasSummary).map((item) => item.bookmarkId),
@@ -52,6 +58,7 @@ export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
         }),
       );
     } catch {
+      if (taskToken() !== token) return;
       setState('error');
       setMessage(t('summary.previewFailed'));
     }
@@ -90,6 +97,8 @@ export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
     });
     if (!confirmed) return;
 
+    const token = taskToken() + 1;
+    setTaskToken(token);
     setState('applying');
     setMessage(null);
     try {
@@ -98,13 +107,21 @@ export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
       const result = await messaging.sendMessage('generateBookmarkSummaries', {
         bookmarkIds: selectedIds(),
       });
+      if (taskToken() !== token) return;
       setState('applied');
       setMessage(t('summary.generateSuccess', { count: result.updatedCount }));
       await loadPreview();
     } catch {
+      if (taskToken() !== token) return;
       setState('error');
       setMessage(t('summary.generateFailed'));
     }
+  };
+
+  const stopTask = () => {
+    setTaskToken((token) => token + 1);
+    setState('cancelled');
+    setMessage(t('summary.taskCancelled'));
   };
 
   const toggleSelection = (bookmarkId: string, checked: boolean) => {
@@ -140,6 +157,8 @@ export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
           >
             {state() === 'loading'
               ? t('common.loading')
+              : state() === 'cancelled'
+                ? t('summary.cancelled')
               : state() === 'applying'
                 ? t('summary.generating')
                 : state() === 'applied'
@@ -162,6 +181,11 @@ export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
           >
             {t('summary.scanButton')}
           </Button>
+          <Show when={state() === 'loading' || state() === 'applying'}>
+            <Button type="button" variant="secondary" onClick={stopTask}>
+              {t('summary.stopButton')}
+            </Button>
+          </Show>
           <Show when={preview()?.items.length}>
             <Button
               type="button"
@@ -175,13 +199,26 @@ export function SummaryToolWorkspace(props: WorkspaceBaseProps) {
 
         <Show when={preview()?.items.length}>
           <div class="mt-5">
-            <input
-              type="search"
-              value={query()}
-              placeholder={t('summary.searchPlaceholder')}
-              class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
-              onInput={(event) => setQuery(event.currentTarget.value)}
-            />
+            <ControlField
+              label={t('summary.searchLabel')}
+              description={t('summary.searchHelp')}
+            >
+              <input
+                type="search"
+                value={query()}
+                placeholder={t('summary.searchPlaceholder')}
+                class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
+                onInput={(event) => setQuery(event.currentTarget.value)}
+              />
+            </ControlField>
+          </div>
+        </Show>
+        <Show when={state() === 'loading' || state() === 'applying'}>
+          <div class="mt-4 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2">
+            <div class="text-sm leading-6 text-neutral-600">
+              {message() ?? t('summary.scanProgress')}
+            </div>
+            <ProgressBar active />
           </div>
         </Show>
       </section>

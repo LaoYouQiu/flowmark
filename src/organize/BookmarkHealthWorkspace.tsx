@@ -2,6 +2,8 @@ import { createMemo, createSignal, For, Show } from 'solid-js';
 
 import { Button } from '@/src/components/Button';
 import { StatusBadge } from '@/src/components/StatusBadge';
+import { ControlField } from '@/src/organize/ControlField';
+import { ProgressBar } from '@/src/organize/ProgressBar';
 import type { WorkspaceBaseProps } from '@/src/organize/types';
 import { useI18n } from '@/src/shared/i18n';
 import { messaging } from '@/src/shared/messaging';
@@ -11,7 +13,7 @@ import type {
   BookmarkHealthPreview,
 } from '@/src/shared/types';
 
-type HealthState = 'idle' | 'loading' | 'ready' | 'error';
+type HealthState = 'idle' | 'loading' | 'cancelled' | 'ready' | 'error';
 type HealthFilter = 'all' | BookmarkHealthIssueType;
 
 const NETWORK_PERMISSION_ORIGINS = ['http://*/*', 'https://*/*'];
@@ -23,6 +25,7 @@ export function BookmarkHealthWorkspace(props: WorkspaceBaseProps) {
   const [preview, setPreview] = createSignal<BookmarkHealthPreview | null>(null);
   const [state, setState] = createSignal<HealthState>('idle');
   const [message, setMessage] = createSignal<string | null>(null);
+  const [scanToken, setScanToken] = createSignal(0);
   const [query, setQuery] = createSignal(props.initialQuery ?? '');
   const [typeFilter, setTypeFilter] = createSignal<HealthFilter>('all');
   const [checkLimit, setCheckLimit] = createSignal(80);
@@ -43,12 +46,15 @@ export function BookmarkHealthWorkspace(props: WorkspaceBaseProps) {
   });
 
   const loadPreview = async () => {
+    const token = scanToken() + 1;
+    setScanToken(token);
     setState('loading');
-    setMessage(null);
+    setMessage(t('health.scanProgress'));
     try {
       const next = await messaging.sendMessage('generateBookmarkHealthPreview', {
         limit: checkLimit(),
       });
+      if (scanToken() !== token) return;
       setPreview(next);
       setState('ready');
       setMessage(
@@ -64,9 +70,16 @@ export function BookmarkHealthWorkspace(props: WorkspaceBaseProps) {
             }),
       );
     } catch {
+      if (scanToken() !== token) return;
       setState('error');
       setMessage(t('health.previewFailed'));
     }
+  };
+
+  const stopScan = () => {
+    setScanToken((token) => token + 1);
+    setState('cancelled');
+    setMessage(t('health.scanCancelled'));
   };
 
   const requestNetworkPermission = async () => {
@@ -111,43 +124,60 @@ export function BookmarkHealthWorkspace(props: WorkspaceBaseProps) {
           <StatusBadge tone={state() === 'error' ? 'warning' : 'neutral'}>
             {state() === 'loading'
               ? t('common.loading')
+              : state() === 'cancelled'
+                ? t('health.cancelled')
               : state() === 'ready'
                 ? t('health.ready')
                 : t('health.pending')}
           </StatusBadge>
         </div>
 
-        <div class="mt-5 grid gap-3 sm:grid-cols-[1fr_180px_180px]">
-          <input
-            class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
-            value={query()}
-            placeholder={t('health.searchPlaceholder')}
-            onInput={(event) => setQuery(event.currentTarget.value)}
-          />
-          <select
-            class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
-            value={typeFilter()}
-            onInput={(event) => setTypeFilter(event.currentTarget.value as HealthFilter)}
+        <div class="mt-5 grid gap-4 sm:grid-cols-[1fr_210px_190px]">
+          <ControlField
+            label={t('health.searchLabel')}
+            description={t('health.searchHelp')}
           >
-            <option value="all">{t('health.filterAll')}</option>
-            <option value="invalid_url">{t('health.issueInvalidUrl')}</option>
-            <option value="unsupported_protocol">{t('health.issueUnsupportedProtocol')}</option>
-            <option value="permission_missing">{t('health.issuePermissionMissing')}</option>
-            <option value="timeout">{t('health.issueTimeout')}</option>
-            <option value="network_error">{t('health.issueNetworkError')}</option>
-            <option value="http_error">{t('health.issueHttpError')}</option>
-            <option value="login_required">{t('health.issueLoginRequired')}</option>
-            <option value="redirect">{t('health.issueRedirect')}</option>
-          </select>
-          <input
-            type="number"
-            min="1"
-            max="200"
-            class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
-            value={checkLimit()}
-            aria-label={t('health.limitLabel')}
-            onInput={(event) => setCheckLimit(clampLimit(Number(event.currentTarget.value)))}
-          />
+            <input
+              class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
+              value={query()}
+              placeholder={t('health.searchPlaceholder')}
+              onInput={(event) => setQuery(event.currentTarget.value)}
+            />
+          </ControlField>
+          <ControlField
+            label={t('health.typeFilterLabel')}
+            description={t('health.typeFilterHelp')}
+          >
+            <select
+              class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
+              value={typeFilter()}
+              onInput={(event) => setTypeFilter(event.currentTarget.value as HealthFilter)}
+            >
+              <option value="all">{t('health.filterAll')}</option>
+              <option value="invalid_url">{t('health.issueInvalidUrl')}</option>
+              <option value="unsupported_protocol">{t('health.issueUnsupportedProtocol')}</option>
+              <option value="permission_missing">{t('health.issuePermissionMissing')}</option>
+              <option value="timeout">{t('health.issueTimeout')}</option>
+              <option value="network_error">{t('health.issueNetworkError')}</option>
+              <option value="http_error">{t('health.issueHttpError')}</option>
+              <option value="login_required">{t('health.issueLoginRequired')}</option>
+              <option value="redirect">{t('health.issueRedirect')}</option>
+            </select>
+          </ControlField>
+          <ControlField
+            label={t('health.limitLabel')}
+            description={t('health.limitHelp')}
+          >
+            <input
+              type="number"
+              min="1"
+              max="1000"
+              class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
+              value={checkLimit()}
+              aria-label={t('health.limitLabel')}
+              onInput={(event) => setCheckLimit(clampLimit(Number(event.currentTarget.value)))}
+            />
+          </ControlField>
         </div>
 
         <div class="mt-4 flex flex-wrap gap-3">
@@ -158,6 +188,11 @@ export function BookmarkHealthWorkspace(props: WorkspaceBaseProps) {
           >
             {t('health.scanButton')}
           </Button>
+          <Show when={state() === 'loading'}>
+            <Button type="button" variant="secondary" onClick={stopScan}>
+              {t('health.stopScanButton')}
+            </Button>
+          </Show>
           <Show when={preview() && !preview()?.networkPermissionGranted}>
             <Button
               type="button"
@@ -176,6 +211,9 @@ export function BookmarkHealthWorkspace(props: WorkspaceBaseProps) {
           {(text) => (
             <div class="mt-4 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm leading-6 text-neutral-600">
               {text()}
+              <Show when={state() === 'loading'}>
+                <ProgressBar active />
+              </Show>
             </div>
           )}
         </Show>
@@ -310,5 +348,5 @@ function issueLabel(
 
 function clampLimit(value: number): number {
   if (!Number.isFinite(value)) return 80;
-  return Math.max(1, Math.min(200, Math.trunc(value)));
+  return Math.max(1, Math.min(1000, Math.trunc(value)));
 }

@@ -1,7 +1,8 @@
-import { createEffect, createMemo, createSignal, For, onMount, Show } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 
 import { Button } from '@/src/components/Button';
 import { ConfirmDialog, type ConfirmDialogOptions } from '@/src/components/ConfirmDialog';
+import { ControlField } from '@/src/organize/ControlField';
 import { BookmarkHealthWorkspace } from '@/src/organize/BookmarkHealthWorkspace';
 import { BookmarkOrganizerWorkspace } from '@/src/organize/BookmarkOrganizerWorkspace';
 import { DuplicateCleanupWorkspace } from '@/src/organize/DuplicateCleanupWorkspace';
@@ -78,6 +79,7 @@ const modules: OrganizerModule[] = [
 ];
 
 export default function App() {
+  let workspaceRef: HTMLElement | undefined;
   const [settings, setSettings] = createSignal<FlowmarkSettings | null>(null);
   const [activeModule, setActiveModule] = createSignal<OrganizerModuleId>(readModuleFromUrl());
   const [filterSeed, setFilterSeed] = createSignal(readQueryParam('q') ?? '');
@@ -86,6 +88,10 @@ export default function App() {
   const [undoingEntryId, setUndoingEntryId] = createSignal<string | null>(null);
   const [backupState, setBackupState] = createSignal<'idle' | 'exporting' | 'done' | 'error'>('idle');
   const [backupMessage, setBackupMessage] = createSignal<string | null>(null);
+  const [debugCount, setDebugCount] = createSignal(100);
+  const [debugState, setDebugState] = createSignal<'idle' | 'creating' | 'done' | 'error'>('idle');
+  const [debugMessage, setDebugMessage] = createSignal<string | null>(null);
+  const [workspaceMinHeight, setWorkspaceMinHeight] = createSignal(0);
   const [confirmState, setConfirmState] = createSignal<{
     options: ConfirmDialogOptions;
     resolve: (confirmed: boolean) => void;
@@ -104,11 +110,31 @@ export default function App() {
     writeUrlState(activeModule(), filterSeed());
   });
 
+  createEffect(() => {
+    activeModule();
+    filterSeed();
+    requestAnimationFrame(measureWorkspaceHeight);
+  });
+
   onMount(() => {
     void (async () => {
       setSettings(await getSettings());
       await loadHistory();
     })();
+
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => measureWorkspaceHeight());
+    if (workspaceRef) {
+      resizeObserver?.observe(workspaceRef);
+    }
+
+    window.addEventListener('resize', measureWorkspaceHeight);
+    onCleanup(() => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', measureWorkspaceHeight);
+    });
   });
 
   const loadHistory = async () => {
@@ -149,9 +175,80 @@ export default function App() {
     }
   };
 
+  const createDebugBookmarks = async () => {
+    const confirmed = await confirmAction({
+      title: t('debugBookmarks.confirmTitle'),
+      body: t('debugBookmarks.confirmBody'),
+      confirmLabel: t('debugBookmarks.confirmButton'),
+      cancelLabel: t('confirm.cancelButton'),
+      tone: 'primary',
+      content: () => (
+        <ControlField
+          label={t('debugBookmarks.countLabel')}
+          description={t('debugBookmarks.countHint')}
+        >
+          <input
+            type="number"
+            min="1"
+            max="4000"
+            class="w-full rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition-colors focus:border-neutral-400"
+            value={debugCount()}
+            onInput={(event) => setDebugCount(clampDebugCount(Number(event.currentTarget.value)))}
+          />
+        </ControlField>
+      ),
+    });
+    if (!confirmed) return;
+
+    setDebugState('creating');
+    setDebugMessage(null);
+    try {
+      const result = await messaging.sendMessage('createDebugBookmarks', { count: debugCount() });
+      setDebugState('done');
+      setDebugMessage(t('debugBookmarks.success', {
+        count: result.createdCount,
+        folder: result.rootFolderTitle,
+      }));
+    } catch {
+      setDebugState('error');
+      setDebugMessage(t('debugBookmarks.failed'));
+    }
+  };
+
   const navigateModule = (moduleId: OrganizerModuleId, seed = '') => {
+    const scrollTop = window.scrollY;
+    lockCurrentScrollRange(scrollTop);
     setActiveModule(moduleId);
     setFilterSeed(seed);
+    keepScrollPosition(scrollTop);
+  };
+
+  const measureWorkspaceHeight = () => {
+    const viewportMinimum = Math.max(0, window.innerHeight - 144);
+    const activePanelHeight = getActivePanelHeight();
+    setWorkspaceMinHeight(Math.max(viewportMinimum, activePanelHeight));
+  };
+
+  const lockCurrentScrollRange = (scrollTop: number) => {
+    const workspace = workspaceRef;
+    if (!workspace) return;
+    const sectionTop = workspace.getBoundingClientRect().top + window.scrollY;
+    const visibleBottomInsideSection = scrollTop + window.innerHeight - sectionTop;
+    const lockedHeight = Math.max(
+      workspaceMinHeight(),
+      getActivePanelHeight(),
+      Math.ceil(visibleBottomInsideSection),
+    );
+    setWorkspaceMinHeight(lockedHeight);
+  };
+
+  const getActivePanelHeight = () => {
+    const workspace = workspaceRef;
+    if (!workspace) return 0;
+    const activePanel = workspace.querySelector<HTMLElement>(
+      `[data-module-panel="${activeModule()}"]`,
+    );
+    return Math.ceil(activePanel?.scrollHeight ?? workspace.scrollHeight);
   };
 
   const confirmAction = (options: ConfirmActionOptions) =>
@@ -240,6 +337,16 @@ export default function App() {
                   ? t('backup.exporting')
                   : t('backup.exportHtmlButton')}
               </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => void createDebugBookmarks()}
+                disabled={debugState() === 'creating'}
+              >
+                {debugState() === 'creating'
+                  ? t('debugBookmarks.creating')
+                  : t('debugBookmarks.button')}
+              </Button>
               <Button type="button" variant="secondary" onClick={openOptions}>
                 {t('organize.openSettings')}
               </Button>
@@ -251,6 +358,20 @@ export default function App() {
                 class={[
                   'mt-4 rounded-md border px-3 py-2 text-sm leading-6',
                   backupState() === 'error'
+                    ? 'border-red-200 bg-red-50 text-red-700'
+                    : 'border-neutral-200 bg-white text-neutral-600',
+                ].join(' ')}
+              >
+                {message()}
+              </div>
+            )}
+          </Show>
+          <Show when={debugMessage()}>
+            {(message) => (
+              <div
+                class={[
+                  'mt-3 rounded-md border px-3 py-2 text-sm leading-6',
+                  debugState() === 'error'
                     ? 'border-red-200 bg-red-50 text-red-700'
                     : 'border-neutral-200 bg-white text-neutral-600',
                 ].join(' ')}
@@ -279,6 +400,7 @@ export default function App() {
                         ? 'border-neutral-900 bg-neutral-950 text-white'
                         : 'border-transparent bg-white text-neutral-900 hover:border-neutral-200 hover:bg-neutral-50',
                     ].join(' ')}
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={() => navigateModule(module.id)}
                   >
                     <div class="flex items-start justify-between gap-3">
@@ -361,43 +483,72 @@ export default function App() {
             </div>
           </aside>
 
-          <section class="min-w-0">
-            {activeModule() === 'smart-organize' ? (
+          <section
+            ref={(element) => {
+              workspaceRef = element;
+            }}
+            class="min-w-0 min-h-[calc(100vh-9rem)]"
+            style={{ 'min-height': `${workspaceMinHeight()}px` }}
+          >
+            <div
+              data-module-panel="smart-organize"
+              class={activeModule() === 'smart-organize' ? '' : 'hidden'}
+            >
               <BookmarkOrganizerWorkspace
                 locale={locale}
                 initialQuery={filterSeed()}
                 confirmAction={confirmAction}
               />
-            ) : activeModule() === 'duplicate-cleanup' ? (
+            </div>
+            <div
+              data-module-panel="duplicate-cleanup"
+              class={activeModule() === 'duplicate-cleanup' ? '' : 'hidden'}
+            >
               <DuplicateCleanupWorkspace
                 locale={locale}
                 initialQuery={filterSeed()}
                 confirmAction={confirmAction}
               />
-            ) : activeModule() === 'folder-audit' ? (
+            </div>
+            <div
+              data-module-panel="folder-audit"
+              class={activeModule() === 'folder-audit' ? '' : 'hidden'}
+            >
               <FolderAuditWorkspace
                 locale={locale}
                 initialQuery={filterSeed()}
                 onNavigate={navigateModule}
                 confirmAction={confirmAction}
               />
-            ) : activeModule() === 'bookmark-health' ? (
+            </div>
+            <div
+              data-module-panel="bookmark-health"
+              class={activeModule() === 'bookmark-health' ? '' : 'hidden'}
+            >
               <BookmarkHealthWorkspace
                 locale={locale}
                 initialQuery={filterSeed()}
               />
-            ) : activeModule() === 'summary-tools' ? (
+            </div>
+            <div
+              data-module-panel="summary-tools"
+              class={activeModule() === 'summary-tools' ? '' : 'hidden'}
+            >
               <SummaryToolWorkspace
                 locale={locale}
                 initialQuery={filterSeed()}
                 confirmAction={confirmAction}
               />
-            ) : (
+            </div>
+            <div
+              data-module-panel="summary-search"
+              class={activeModule() === 'summary-search' ? '' : 'hidden'}
+            >
               <SummarySearchWorkspace
                 locale={locale}
                 initialQuery={filterSeed()}
               />
-            )}
+            </div>
           </section>
         </main>
       </div>
@@ -440,4 +591,18 @@ function writeUrlState(moduleId: OrganizerModuleId, query: string): void {
     url.searchParams.delete('q');
   }
   window.history.replaceState({}, '', url);
+}
+
+function keepScrollPosition(scrollTop: number): void {
+  queueMicrotask(() => {
+    window.scrollTo({ top: scrollTop, left: window.scrollX, behavior: 'auto' });
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: scrollTop, left: window.scrollX, behavior: 'auto' });
+    });
+  });
+}
+
+function clampDebugCount(count: number): number {
+  if (!Number.isFinite(count)) return 100;
+  return Math.min(4000, Math.max(1, Math.floor(count)));
 }

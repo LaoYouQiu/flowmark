@@ -5,6 +5,7 @@ import { messaging } from '@/src/shared/messaging';
 import { appendOperationHistoryEntry } from '@/src/shared/operation-history';
 import { getResolvedSettings } from '@/src/shared/settings';
 import type {
+  BookmarkFolderCandidate,
   BookmarkSummaryRecord,
   BookmarkTreeNodeSnapshot,
   ExistingBookmarkApplyActions,
@@ -26,10 +27,18 @@ import {
 
 const SMART_ORGANIZE_BATCH_THRESHOLD = 30;
 const PAGE_TEXT_LIMIT = 5000;
+const SMART_ORGANIZE_CONCURRENCY = 8;
 
 type SmartOrganizeJob = SmartOrganizeJobSnapshot & {
   bookmarkIds: string[];
   cursor: number;
+  duplicateSkipIds: string[];
+  canonicalFolderByPath: Record<string, string>;
+};
+
+type SmartOrganizePreflight = {
+  duplicateSkipIds: Set<string>;
+  canonicalFolderByPath: Map<string, string>;
 };
 
 let activeSmartOrganizeJob: SmartOrganizeJob | null = null;
@@ -76,21 +85,21 @@ async function generateExistingBookmarkPreview(): Promise<ExistingBookmarkSugges
   const tree = await browser.bookmarks.getTree();
   const bookmarksBarId = getBookmarksBarId(tree);
   const bookmarksBarLabel = t('common.bookmarksBar');
-  const bookmarkNodes = flattenBookmarkNodes(tree).filter(isOrganizableBookmarkNode);
-  const suggestions: ExistingBookmarkSuggestionItem[] = [];
-
-  for (const node of bookmarkNodes) {
-    const item = await generateSuggestionForNode({
-      node,
-      tree,
-      bookmarksBarId,
-      bookmarksBarLabel,
-      settings,
-      locale,
-      untitledFallback: t('common.untitled'),
-    });
-    if (item) suggestions.push(item);
-  }
+  const preflight = await buildSmartOrganizePreflight(tree, bookmarksBarId, bookmarksBarLabel);
+  const bookmarkNodes = flattenBookmarkNodes(tree)
+    .filter(isOrganizableBookmarkNode)
+    .filter((node) => !preflight.duplicateSkipIds.has(node.id));
+  const suggestions = await generateSuggestionsForNodes({
+    nodes: bookmarkNodes,
+    tree,
+    bookmarksBarId,
+    bookmarksBarLabel,
+    settings,
+    locale,
+    untitledFallback: t('common.untitled'),
+    concurrency: SMART_ORGANIZE_CONCURRENCY,
+    preflight,
+  });
 
   return {
     totalBookmarksScanned: bookmarkNodes.length,
@@ -102,7 +111,14 @@ async function generateExistingBookmarkPreview(): Promise<ExistingBookmarkSugges
 async function startSmartOrganizeJob(batchSize?: number): Promise<SmartOrganizeJobSnapshot> {
   const settings = await getResolvedSettings();
   const tree = await browser.bookmarks.getTree();
-  const bookmarkNodes = flattenBookmarkNodes(tree).filter(isOrganizableBookmarkNode);
+  const locale = await getCurrentLocale(settings.raw);
+  const { t } = createTranslator(locale);
+  const bookmarksBarId = getBookmarksBarId(tree);
+  const bookmarksBarLabel = t('common.bookmarksBar');
+  const preflight = await buildSmartOrganizePreflight(tree, bookmarksBarId, bookmarksBarLabel);
+  const bookmarkNodes = flattenBookmarkNodes(tree)
+    .filter(isOrganizableBookmarkNode)
+    .filter((node) => !preflight.duplicateSkipIds.has(node.id));
 
   // Keep the UI simple for small libraries: no progress bar or polling when
   // the full preview can finish in one request.
@@ -119,7 +135,7 @@ async function startSmartOrganizeJob(batchSize?: number): Promise<SmartOrganizeJ
     };
   }
 
-  const normalizedBatchSize = Math.max(1, Math.min(20, Math.trunc(batchSize ?? settings.raw.smartOrganizeBatchSize)));
+  const normalizedBatchSize = Math.max(1, Math.min(40, Math.trunc(batchSize ?? settings.raw.smartOrganizeBatchSize)));
   activeSmartOrganizeJob = {
     id: `${Date.now()}:${Math.random().toString(36).slice(2)}`,
     status: 'running',
@@ -130,6 +146,8 @@ async function startSmartOrganizeJob(batchSize?: number): Promise<SmartOrganizeJ
     suggestions: [],
     bookmarkIds: bookmarkNodes.map((node) => node.id),
     cursor: 0,
+    duplicateSkipIds: [...preflight.duplicateSkipIds],
+    canonicalFolderByPath: Object.fromEntries(preflight.canonicalFolderByPath),
   };
 
   return toSmartOrganizeJobSnapshot(activeSmartOrganizeJob);
@@ -159,25 +177,34 @@ async function runSmartOrganizeJobBatch(jobId: string): Promise<SmartOrganizeJob
     const bookmarksBarId = getBookmarksBarId(tree);
     const bookmarksBarLabel = t('common.bookmarksBar');
     const nodesById = new Map(flattenBookmarkNodes(tree).map((node) => [node.id, node]));
+    const preflight: SmartOrganizePreflight = {
+      duplicateSkipIds: new Set(job.duplicateSkipIds),
+      canonicalFolderByPath: new Map(Object.entries(job.canonicalFolderByPath)),
+    };
     const end = Math.min(job.cursor + job.batchSize, job.bookmarkIds.length);
+    const sliceIds = job.bookmarkIds.slice(job.cursor, end);
+    const nodes = sliceIds
+      .map((id) => nodesById.get(id))
+      .filter((node): node is BookmarkTreeNodeSnapshot & { url: string } =>
+        Boolean(node && isOrganizableBookmarkNode(node)),
+      );
 
-    // Process a bounded slice per call so the organize UI can show progress and
-    // resume after a failed batch without losing previous suggestions.
-    for (; job.cursor < end; job.cursor += 1) {
-      const node = nodesById.get(job.bookmarkIds[job.cursor] ?? '');
-      job.scanned += 1;
-      if (!node || !isOrganizableBookmarkNode(node)) continue;
-      const item = await generateSuggestionForNode({
-        node,
-        tree,
-        bookmarksBarId,
-        bookmarksBarLabel,
-        settings,
-        locale,
-        untitledFallback: t('common.untitled'),
-      });
-      if (item) job.suggestions.push(item);
-    }
+    // Process each bounded slice with limited concurrency. This keeps the UI
+    // progress model unchanged while avoiding one AI request blocking the next.
+    const suggestions = await generateSuggestionsForNodes({
+      nodes,
+      tree,
+      bookmarksBarId,
+      bookmarksBarLabel,
+      settings,
+      locale,
+      untitledFallback: t('common.untitled'),
+      concurrency: Math.min(SMART_ORGANIZE_CONCURRENCY, job.batchSize),
+      preflight,
+    });
+    job.suggestions.push(...suggestions);
+    job.scanned += sliceIds.length;
+    job.cursor = end;
 
     job.suggestionCount = job.suggestions.length;
     if (job.cursor >= job.bookmarkIds.length) {
@@ -189,6 +216,51 @@ async function runSmartOrganizeJobBatch(jobId: string): Promise<SmartOrganizeJob
     job.error = error instanceof Error ? error.message : 'Unknown error';
     return toSmartOrganizeJobSnapshot(job);
   }
+}
+
+async function generateSuggestionsForNodes(input: {
+  nodes: Array<BookmarkTreeNodeSnapshot & { url: string }>;
+  tree: BookmarkTreeNodeSnapshot[];
+  bookmarksBarId: string | null;
+  bookmarksBarLabel: string;
+  settings: Awaited<ReturnType<typeof getResolvedSettings>>;
+  locale: Awaited<ReturnType<typeof getCurrentLocale>>;
+  untitledFallback: string;
+  concurrency: number;
+  preflight: SmartOrganizePreflight;
+}): Promise<ExistingBookmarkSuggestionItem[]> {
+  const suggestions: ExistingBookmarkSuggestionItem[] = [];
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(input.concurrency, input.nodes.length));
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (cursor < input.nodes.length) {
+        const node = input.nodes[cursor];
+        cursor += 1;
+        if (!node) continue;
+
+        try {
+          const item = await generateSuggestionForNode({
+            node,
+            tree: input.tree,
+            bookmarksBarId: input.bookmarksBarId,
+            bookmarksBarLabel: input.bookmarksBarLabel,
+            settings: input.settings,
+            locale: input.locale,
+            untitledFallback: input.untitledFallback,
+            preflight: input.preflight,
+          });
+          if (item) suggestions.push(item);
+        } catch {
+          // Skip individual failures so one slow or rejected AI request does
+          // not stop the whole organize scan.
+        }
+      }
+    }),
+  );
+
+  return suggestions;
 }
 
 function cancelSmartOrganizeJob(jobId: string): SmartOrganizeJobSnapshot {
@@ -217,6 +289,7 @@ async function generateSuggestionForNode(input: {
   settings: Awaited<ReturnType<typeof getResolvedSettings>>;
   locale: Awaited<ReturnType<typeof getCurrentLocale>>;
   untitledFallback: string;
+  preflight: SmartOrganizePreflight;
 }): Promise<ExistingBookmarkSuggestionItem | null> {
   // Build one structured plan for an existing bookmark. The AI chooses a target
   // from local candidates; local code then translates the result into actions.
@@ -225,25 +298,34 @@ async function generateSuggestionForNode(input: {
 
   const existingFolderPaths = new Set([
     bookmarksBarLabel,
-    ...collectFolderPaths(tree, bookmarksBarId),
+    ...collectFolderPaths(tree, bookmarksBarId)
+      .map((path) => canonicalizeFolderPath(path, input.preflight.canonicalFolderByPath)),
   ]);
-  const currentFolderPath = getRelativeFolderPath(
+  const rawCurrentFolderPath = getRelativeFolderPath(
     tree,
     bookmarksBarId,
     node.parentId ?? null,
     bookmarksBarLabel,
   );
+  const currentFolderPath = canonicalizeFolderPath(
+    rawCurrentFolderPath,
+    input.preflight.canonicalFolderByPath,
+  );
   const pageContent = toPreviewPageContent(node);
-  const folderCandidates = selectFolderCandidateNodes({
-    tree,
-    bookmarksBarId,
+  const folderCandidates = canonicalizeFolderCandidates(
+    selectFolderCandidateNodes({
+      tree,
+      bookmarksBarId,
+      bookmarksBarLabel,
+      url: node.url,
+      title: node.title ?? '',
+      pageContent,
+      currentFolderPath: rawCurrentFolderPath,
+      maxCandidates: settings.raw.folderCandidateLimit,
+    }),
+    input.preflight.canonicalFolderByPath,
     bookmarksBarLabel,
-    url: node.url,
-    title: node.title ?? '',
-    pageContent,
-    currentFolderPath,
-    maxCandidates: settings.raw.folderCandidateLimit,
-  });
+  );
   const suggestion = await getBookmarkSuggestion({
     settings: settings.raw,
     locale,
@@ -263,7 +345,10 @@ async function generateSuggestionForNode(input: {
     bookmarksBarLabel,
     organizeIntensity: settings.raw.organizeIntensity,
     originalTitle: node.title ?? '',
-    suggestedFolder: suggestion.suggestedFolder,
+    suggestedFolder: canonicalizeFolderPath(
+      suggestion.suggestedFolder,
+      input.preflight.canonicalFolderByPath,
+    ),
     suggestedTitle: suggestion.title,
     summary: suggestion.summary,
   });
@@ -271,7 +356,7 @@ async function generateSuggestionForNode(input: {
   // Keep the displayed folder aligned with the actual plan. If intensity rules
   // suppress movement, the card should present this as metadata-only cleanup.
   const effectiveSuggestedFolder = actions.some((action) => action.type === 'move')
-    ? suggestion.suggestedFolder
+    ? canonicalizeFolderPath(suggestion.suggestedFolder, input.preflight.canonicalFolderByPath)
     : currentFolderPath;
 
   return {
@@ -494,6 +579,275 @@ function buildPlanReason(actions: ExistingBookmarkPlanAction[]): ExistingBookmar
   return 'keep';
 }
 
+async function buildSmartOrganizePreflight(
+  tree: BookmarkTreeNodeSnapshot[],
+  bookmarksBarId: string | null,
+  bookmarksBarLabel: string,
+): Promise<SmartOrganizePreflight> {
+  // Keep smart organize focused on items worth asking AI about. Duplicate URL
+  // copies are better handled by Duplicate Cleanup, and similar folders should
+  // resolve toward one stable target before AI sees the candidate list.
+  const bookmarkNodes = flattenBookmarkNodes(tree).filter(isOrganizableBookmarkNode);
+  const duplicateSkipIds = await collectDuplicateSkipIds(tree, bookmarksBarId, bookmarksBarLabel, bookmarkNodes);
+  const canonicalFolderByPath = buildCanonicalFolderMap(tree, bookmarksBarId, bookmarksBarLabel);
+  return {
+    duplicateSkipIds,
+    canonicalFolderByPath,
+  };
+}
+
+async function collectDuplicateSkipIds(
+  tree: BookmarkTreeNodeSnapshot[],
+  bookmarksBarId: string | null,
+  bookmarksBarLabel: string,
+  bookmarkNodes: Array<BookmarkTreeNodeSnapshot & { url: string }>,
+): Promise<Set<string>> {
+  const groupsByUrl = new Map<string, Array<{
+    id: string;
+    title: string;
+    folderPath: string;
+    hasSummary: boolean;
+  }>>();
+
+  for (const node of bookmarkNodes) {
+    const normalizedUrl = normalizeBookmarkUrl(node.url);
+    if (!normalizedUrl) continue;
+    const group = groupsByUrl.get(normalizedUrl) ?? [];
+    const summary = await getBookmarkSummary(node.id);
+    group.push({
+      id: node.id,
+      title: node.title ?? '',
+      folderPath: getRelativeFolderPath(tree, bookmarksBarId, node.parentId ?? null, bookmarksBarLabel),
+      hasSummary: Boolean(summary?.summary?.trim()),
+    });
+    groupsByUrl.set(normalizedUrl, group);
+  }
+
+  const skipIds = new Set<string>();
+  for (const group of groupsByUrl.values()) {
+    if (group.length <= 1) continue;
+    const keepId = chooseSmartOrganizeDuplicateKeepId(group);
+    for (const item of group) {
+      if (item.id !== keepId) skipIds.add(item.id);
+    }
+  }
+  return skipIds;
+}
+
+function chooseSmartOrganizeDuplicateKeepId(items: Array<{
+  id: string;
+  title: string;
+  folderPath: string;
+  hasSummary: boolean;
+}>): string {
+  return [...items].sort((a, b) =>
+    scoreSmartOrganizeDuplicateKeep(b) - scoreSmartOrganizeDuplicateKeep(a) ||
+    a.folderPath.localeCompare(b.folderPath) ||
+    a.title.localeCompare(b.title),
+  )[0]?.id ?? items[0]?.id ?? '';
+}
+
+function scoreSmartOrganizeDuplicateKeep(item: {
+  title: string;
+  folderPath: string;
+  hasSummary: boolean;
+}): number {
+  let score = 0;
+  if (item.hasSummary) score += 40;
+  const title = item.title.trim();
+  if (title.length >= 8 && title.length <= 80) score += 20;
+  if (/^https?:\/\//i.test(title) || /^www\./i.test(title)) score -= 30;
+  if (title.length > 120) score -= 12;
+  score += Math.max(0, 8 - folderDepth(item.folderPath));
+  return score;
+}
+
+function buildCanonicalFolderMap(
+  tree: BookmarkTreeNodeSnapshot[],
+  bookmarksBarId: string | null,
+  bookmarksBarLabel: string,
+): Map<string, string> {
+  if (!bookmarksBarId) return new Map();
+  const folders = collectSmartOrganizeFolderProfiles(tree, bookmarksBarId, bookmarksBarLabel);
+  const groups = new Map<string, typeof folders>();
+
+  for (const folder of folders) {
+    if (folder.semanticParts.length < 2) continue;
+    const group = groups.get(folder.signature) ?? [];
+    group.push(folder);
+    groups.set(folder.signature, group);
+  }
+
+  const canonical = new Map<string, string>();
+  for (const group of groups.values()) {
+    if (group.length <= 1) continue;
+    const target = [...group].sort((a, b) =>
+      b.totalBookmarkCount - a.totalBookmarkCount ||
+      a.depth - b.depth ||
+      a.path.localeCompare(b.path),
+    )[0];
+    if (!target) continue;
+    for (const folder of group) {
+      if (folder.path !== target.path) canonical.set(folder.path, target.path);
+    }
+  }
+  return canonical;
+}
+
+function collectSmartOrganizeFolderProfiles(
+  tree: BookmarkTreeNodeSnapshot[],
+  bookmarksBarId: string,
+  bookmarksBarLabel: string,
+): Array<{
+  path: string;
+  depth: number;
+  totalBookmarkCount: number;
+  semanticParts: string[];
+  signature: string;
+}> {
+  const root = findTreeNodeById(tree, bookmarksBarId);
+  if (!root) return [];
+  const profiles: Array<{
+    path: string;
+    depth: number;
+    totalBookmarkCount: number;
+    semanticParts: string[];
+    signature: string;
+  }> = [];
+  const stack: Array<{ node: BookmarkTreeNodeSnapshot; path: string; depth: number }> = [];
+
+  for (const child of root.children ?? []) {
+    if (!child.url) {
+      const title = child.title?.trim();
+      if (title) stack.push({ node: child, path: title, depth: 1 });
+    }
+  }
+
+  while (stack.length > 0) {
+    const item = stack.pop();
+    if (!item) break;
+    const semanticParts = semanticFolderParts(item.path);
+    profiles.push({
+      path: item.path || bookmarksBarLabel,
+      depth: item.depth,
+      totalBookmarkCount: countBookmarkDescendants(item.node),
+      semanticParts,
+      signature: [...semanticParts].sort().join('|'),
+    });
+
+    for (const child of item.node.children ?? []) {
+      if (child.url) continue;
+      const title = child.title?.trim();
+      if (!title) continue;
+      stack.push({
+        node: child,
+        path: `${item.path}-${title}`,
+        depth: item.depth + 1,
+      });
+    }
+  }
+
+  return profiles;
+}
+
+function canonicalizeFolderCandidates(
+  candidates: BookmarkFolderCandidate[],
+  canonicalFolderByPath: Map<string, string>,
+  bookmarksBarLabel: string,
+): BookmarkFolderCandidate[] {
+  const byPath = new Map<string, BookmarkFolderCandidate>();
+  for (const candidate of candidates) {
+    const path = canonicalizeFolderPath(candidate.path, canonicalFolderByPath);
+    const existing = byPath.get(path);
+    const bookmarkCount = Math.max(existing?.bookmarkCount ?? 0, candidate.bookmarkCount ?? 0);
+    byPath.set(path, toBookmarkFolderCandidate(path, bookmarksBarLabel, bookmarkCount));
+  }
+  return [...byPath.values()];
+}
+
+function canonicalizeFolderPath(path: string, canonicalFolderByPath: Map<string, string>): string {
+  return canonicalFolderByPath.get(path) ?? path;
+}
+
+function toBookmarkFolderCandidate(
+  path: string,
+  bookmarksBarLabel: string,
+  bookmarkCount?: number,
+): BookmarkFolderCandidate {
+  if (!path || path === bookmarksBarLabel) {
+    return {
+      path: bookmarksBarLabel,
+      name: bookmarksBarLabel,
+      parentPath: null,
+      depth: 0,
+      bookmarkCount,
+    };
+  }
+  const parts = path.split('-').map((part) => part.trim()).filter(Boolean);
+  return {
+    path,
+    name: parts.at(-1) ?? path,
+    parentPath: parts.length > 1 ? parts.slice(0, -1).join('-') : bookmarksBarLabel,
+    depth: parts.length,
+    bookmarkCount,
+  };
+}
+
+function findTreeNodeById(
+  tree: BookmarkTreeNodeSnapshot[],
+  id: string,
+): BookmarkTreeNodeSnapshot | null {
+  const stack = [...tree];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) break;
+    if (node.id === id) return node;
+    for (const child of node.children ?? []) stack.push(child);
+  }
+  return null;
+}
+
+function countBookmarkDescendants(node: BookmarkTreeNodeSnapshot): number {
+  let count = 0;
+  const stack = [...(node.children ?? [])];
+  while (stack.length > 0) {
+    const child = stack.pop();
+    if (!child) break;
+    if (child.url) {
+      count += 1;
+      continue;
+    }
+    for (const grandchild of child.children ?? []) stack.push(grandchild);
+  }
+  return count;
+}
+
+function folderDepth(path: string): number {
+  return path.split('-').map((part) => part.trim()).filter(Boolean).length;
+}
+
+function semanticFolderParts(path: string): string[] {
+  const normalized = path
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/\b(?:ai|aigc)\b|人工智能|智能/giu, ' ai ')
+    .replace(/\btools?\b|工具|效率/giu, ' tool ');
+
+  return normalized
+    .split(/[^\p{L}\p{N}]+/gu)
+    .map((part) => normalizeSemanticFolderPart(part))
+    .filter((part) => part.length > 0 && !SMART_ORGANIZE_FOLDER_STOP_WORDS.has(part));
+}
+
+function normalizeSemanticFolderPart(part: string): string {
+  const normalized = part.trim().toLowerCase();
+  if (['ai', 'aigc', '人工智能', '智能'].includes(normalized)) return 'ai';
+  if (['tool', 'tools', '工具', '效率'].includes(normalized)) return 'tool';
+  if (['dev', 'develop', 'development', 'code', 'coding', '编程', '开发'].includes(normalized)) return 'dev';
+  if (['doc', 'docs', 'document', 'documentation', '文档'].includes(normalized)) return 'docs';
+  return normalized;
+}
+
 function flattenBookmarkNodes(tree: BookmarkTreeNodeSnapshot[]): BookmarkTreeNodeSnapshot[] {
   const result: BookmarkTreeNodeSnapshot[] = [];
   const stack = [...tree];
@@ -554,3 +908,20 @@ async function findOrCreateFolderPath(bookmarksBarId: string, folderPath: string
 
   return currentParentId;
 }
+
+const SMART_ORGANIZE_FOLDER_STOP_WORDS = new Set([
+  'www',
+  'com',
+  'org',
+  'net',
+  'app',
+  'site',
+  'web',
+  'page',
+  'pages',
+  '网站',
+  '网页',
+  '页面',
+  '资源',
+  '收藏',
+]);

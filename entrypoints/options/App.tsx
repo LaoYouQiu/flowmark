@@ -186,7 +186,7 @@ export default function App() {
                     description={t('options.smartOrganizeBatchSizeDescription')}
                     value={current().smartOrganizeBatchSize}
                     min="1"
-                    max="20"
+                    max="40"
                     disabled={false}
                     onInput={(value) => update('smartOrganizeBatchSize', value)}
                   />

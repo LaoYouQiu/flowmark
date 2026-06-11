@@ -7,7 +7,9 @@ import type {
   BookmarkBackupDownload,
   BookmarkBackupFormat,
   BookmarkHealthPreview,
+  DebugBookmarkSeedResult,
   DuplicateBookmarkPreview,
+  DuplicateBookmarkScanJobSnapshot,
   DuplicateBookmarkMergeSelection,
   ExistingBookmarkApplyActions,
   ExistingBookmarkSuggestionPreview,
@@ -39,6 +41,9 @@ export interface ProtocolMap {
   runSmartOrganizeJobBatch(payload: { jobId: string }): SmartOrganizeJobSnapshot;
   cancelSmartOrganizeJob(payload: { jobId: string }): SmartOrganizeJobSnapshot;
   generateDuplicateBookmarkPreview(): DuplicateBookmarkPreview;
+  startDuplicateBookmarkScanJob(): DuplicateBookmarkScanJobSnapshot;
+  runDuplicateBookmarkScanJobBatch(payload: { jobId: string }): DuplicateBookmarkScanJobSnapshot;
+  cancelDuplicateBookmarkScanJob(payload: { jobId: string }): DuplicateBookmarkScanJobSnapshot;
   removeDuplicateBookmarks(payload: {
     bookmarkIds: string[];
     mergeSelections?: DuplicateBookmarkMergeSelection[];
@@ -47,6 +52,7 @@ export interface ProtocolMap {
   applyFolderMergeIssue(payload: ApplyFolderMergeIssueRequest): ApplyFolderMergeIssueResult;
   generateBookmarkHealthPreview(payload?: { limit?: number }): BookmarkHealthPreview;
   exportBookmarkBackup(payload?: { format?: BookmarkBackupFormat }): BookmarkBackupDownload;
+  createDebugBookmarks(payload: { count: number }): DebugBookmarkSeedResult;
   listOperationHistory(): { entries: OperationHistoryEntry[] };
   undoOperationHistoryEntry(payload: { entryId: string }): UndoOperationHistoryResult;
   generateSummaryToolPreview(): SummaryToolPreview;

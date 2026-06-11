@@ -7,6 +7,7 @@ import { initSummaryToolWorkspace } from '@/src/background/summary-tool-workspac
 import { initOperationHistoryWorkspace } from '@/src/background/operation-history-workspace';
 import { initBookmarkBackupWorkspace } from '@/src/background/bookmark-backup-workspace';
 import { initBookmarkHealthWorkspace } from '@/src/background/bookmark-health-workspace';
+import { initDebugBookmarkWorkspace } from '@/src/background/debug-bookmark-workspace';
 
 export default defineBackground(() => {
   // The background worker is the extension's coordinator. Each init call
@@ -20,4 +21,5 @@ export default defineBackground(() => {
   initOperationHistoryWorkspace();
   initBookmarkBackupWorkspace();
   initBookmarkHealthWorkspace();
+  initDebugBookmarkWorkspace();
 });

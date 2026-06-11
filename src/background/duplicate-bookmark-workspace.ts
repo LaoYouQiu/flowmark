@@ -15,12 +15,31 @@ import type {
   DuplicateBookmarkGroup,
   DuplicateBookmarkMergeSelection,
   DuplicateBookmarkPreview,
+  DuplicateBookmarkScanJobSnapshot,
   OperationHistoryChange,
 } from '@/src/shared/types';
 
 import { getBookmarksBarId, getRelativeFolderPath } from './engine/helpers';
 
 const MAX_DUPLICATE_GROUPS = 50;
+const DUPLICATE_SCAN_BATCH_SIZE = 250;
+
+type DuplicateBookmarkScanJob = {
+  id: string;
+  status: DuplicateBookmarkScanJobSnapshot['status'];
+  totalBookmarksScanned: number;
+  scanned: number;
+  bookmarkNodes: BookmarkTreeNodeSnapshot[];
+  cursor: number;
+  groupsByUrl: Map<string, DuplicateBookmarkCandidate[]>;
+  tree: BookmarkTreeNodeSnapshot[];
+  bookmarksBarId: string | null;
+  bookmarksBarLabel: string;
+  untitledFallback: string;
+  error?: string;
+};
+
+let activeDuplicateBookmarkScanJob: DuplicateBookmarkScanJob | null = null;
 
 export function initDuplicateBookmarkWorkspace(): void {
   // Workspace API used by the Duplicate Cleanup page. Preview is read-only;
@@ -29,56 +48,154 @@ export function initDuplicateBookmarkWorkspace(): void {
     return await generateDuplicateBookmarkPreview();
   });
 
+  messaging.onMessage('startDuplicateBookmarkScanJob', async () => {
+    return await startDuplicateBookmarkScanJob();
+  });
+
+  messaging.onMessage('runDuplicateBookmarkScanJobBatch', async ({ data }) => {
+    return await runDuplicateBookmarkScanJobBatch(data.jobId);
+  });
+
+  messaging.onMessage('cancelDuplicateBookmarkScanJob', async ({ data }) => {
+    return cancelDuplicateBookmarkScanJob(data.jobId);
+  });
+
   messaging.onMessage('removeDuplicateBookmarks', async ({ data }) => {
     return await removeDuplicateBookmarks(data.bookmarkIds, data.mergeSelections ?? []);
   });
 }
 
 async function generateDuplicateBookmarkPreview(): Promise<DuplicateBookmarkPreview> {
-  // Group bookmarks by normalized URL so title differences do not hide
-  // duplicates of the same destination.
+  const initialJob = await startDuplicateBookmarkScanJob();
+  let current = initialJob;
+  while (current.status === 'running') {
+    current = await runDuplicateBookmarkScanJobBatch(current.id);
+  }
+  return {
+    totalBookmarksScanned: current.totalBookmarksScanned,
+    duplicateGroupCount: current.duplicateGroupCount,
+    groups: current.groups,
+  };
+}
+
+async function startDuplicateBookmarkScanJob(): Promise<DuplicateBookmarkScanJobSnapshot> {
   const settings = await getResolvedSettings();
   const locale = await getCurrentLocale(settings.raw);
   const { t } = createTranslator(locale);
   const tree = await browser.bookmarks.getTree();
   const bookmarksBarId = getBookmarksBarId(tree);
   const bookmarksBarLabel = t('common.bookmarksBar');
-
   const bookmarkNodes = flattenBookmarkNodes(tree);
-  const groupsByUrl = new Map<string, DuplicateBookmarkCandidate[]>();
 
-  for (const node of bookmarkNodes) {
-    if (!node.url) continue;
-    const normalizedUrl = normalizeBookmarkUrl(node.url);
-    if (!normalizedUrl) continue;
-    const summaryRecord = await getBookmarkSummary(node.id);
+  activeDuplicateBookmarkScanJob = {
+    id: `${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    status: 'running',
+    totalBookmarksScanned: bookmarkNodes.length,
+    scanned: 0,
+    bookmarkNodes,
+    cursor: 0,
+    groupsByUrl: new Map(),
+    tree,
+    bookmarksBarId,
+    bookmarksBarLabel,
+    untitledFallback: t('common.untitled'),
+  };
 
-    const items = groupsByUrl.get(normalizedUrl) ?? [];
-    items.push({
-      id: node.id,
-      title: node.title?.trim() || t('common.untitled'),
-      url: node.url,
-      folderPath: getRelativeFolderPath(
-        tree,
-        bookmarksBarId,
-        node.parentId ?? null,
-        bookmarksBarLabel,
-      ),
-      hasSummary: Boolean(summaryRecord?.summary?.trim()),
-    });
-    groupsByUrl.set(normalizedUrl, items);
+  return toDuplicateBookmarkScanJobSnapshot(activeDuplicateBookmarkScanJob);
+}
+
+async function runDuplicateBookmarkScanJobBatch(jobId: string): Promise<DuplicateBookmarkScanJobSnapshot> {
+  const job = activeDuplicateBookmarkScanJob;
+  if (!job || job.id !== jobId) {
+    return {
+      id: jobId,
+      status: 'failed',
+      totalBookmarksScanned: 0,
+      scanned: 0,
+      duplicateGroupCount: 0,
+      groups: [],
+      error: 'Job not found',
+    };
+  }
+  if (job.status !== 'running') return toDuplicateBookmarkScanJobSnapshot(job);
+
+  try {
+    const end = Math.min(job.cursor + DUPLICATE_SCAN_BATCH_SIZE, job.bookmarkNodes.length);
+    for (; job.cursor < end; job.cursor += 1) {
+      const node = job.bookmarkNodes[job.cursor];
+      job.scanned += 1;
+      if (!node) continue;
+      await collectDuplicateCandidate(job, node);
+    }
+
+    if (job.cursor >= job.bookmarkNodes.length) {
+      job.status = 'completed';
+    }
+    return toDuplicateBookmarkScanJobSnapshot(job);
+  } catch (error) {
+    job.status = 'failed';
+    job.error = error instanceof Error ? error.message : 'Unknown error';
+    return toDuplicateBookmarkScanJobSnapshot(job);
+  }
+}
+
+function cancelDuplicateBookmarkScanJob(jobId: string): DuplicateBookmarkScanJobSnapshot {
+  const job = activeDuplicateBookmarkScanJob;
+  if (!job || job.id !== jobId) {
+    return {
+      id: jobId,
+      status: 'cancelled',
+      totalBookmarksScanned: 0,
+      scanned: 0,
+      duplicateGroupCount: 0,
+      groups: [],
+    };
   }
 
-  const groups: DuplicateBookmarkGroup[] = [...groupsByUrl.entries()]
+  job.status = 'cancelled';
+  return toDuplicateBookmarkScanJobSnapshot(job);
+}
+
+async function collectDuplicateCandidate(
+  job: DuplicateBookmarkScanJob,
+  node: BookmarkTreeNodeSnapshot,
+): Promise<void> {
+  if (!node.url) return;
+  const normalizedUrl = normalizeBookmarkUrl(node.url);
+  if (!normalizedUrl) return;
+  const summaryRecord = await getBookmarkSummary(node.id);
+
+  const items = job.groupsByUrl.get(normalizedUrl) ?? [];
+  items.push({
+    id: node.id,
+    title: node.title?.trim() || job.untitledFallback,
+    url: node.url,
+    folderPath: getRelativeFolderPath(
+      job.tree,
+      job.bookmarksBarId,
+      node.parentId ?? null,
+      job.bookmarksBarLabel,
+    ),
+    hasSummary: Boolean(summaryRecord?.summary?.trim()),
+  });
+  job.groupsByUrl.set(normalizedUrl, items);
+}
+
+function toDuplicateBookmarkScanJobSnapshot(job: DuplicateBookmarkScanJob): DuplicateBookmarkScanJobSnapshot {
+  const groups: DuplicateBookmarkGroup[] = [...job.groupsByUrl.entries()]
     .map(([normalizedUrl, items]) => toDuplicateGroup(normalizedUrl, items))
     .filter((group) => group.items.length > 1)
     .sort((a, b) => b.items.length - a.items.length || a.normalizedUrl.localeCompare(b.normalizedUrl))
     .slice(0, MAX_DUPLICATE_GROUPS);
 
   return {
-    totalBookmarksScanned: bookmarkNodes.length,
+    id: job.id,
+    status: job.status,
+    totalBookmarksScanned: job.totalBookmarksScanned,
+    scanned: job.scanned,
     duplicateGroupCount: groups.length,
     groups,
+    error: job.error,
   };
 }
 

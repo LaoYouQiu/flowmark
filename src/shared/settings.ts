@@ -21,7 +21,7 @@ const settingsSchema = z
     sendPageText: z.boolean().optional(),
     maxPageChars: z.number().int().min(500).max(50_000).optional(),
     organizeIntensity: organizeIntensitySchema.optional(),
-    smartOrganizeBatchSize: z.number().int().min(1).max(20).optional(),
+    smartOrganizeBatchSize: z.number().int().min(1).max(40).optional(),
     folderCandidateLimit: z.number().int().min(3).max(30).optional(),
     aiBaseURL: z.string().optional(),
     aiApiKey: z.string().optional(),
@@ -53,7 +53,7 @@ export async function getSettings(): Promise<FlowmarkSettings> {
     smartOrganizeBatchSize: clampInt(
       data.smartOrganizeBatchSize ?? DEFAULT_SETTINGS.smartOrganizeBatchSize,
       1,
-      20,
+      40,
     ),
     folderCandidateLimit: clampInt(
       data.folderCandidateLimit ?? DEFAULT_SETTINGS.folderCandidateLimit,
